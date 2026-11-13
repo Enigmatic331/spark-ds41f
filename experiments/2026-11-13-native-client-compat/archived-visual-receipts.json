@@ -1,0 +1,151 @@
+{
+  "candidate": {
+    "status": "FAIL",
+    "source_sha256": "84e2e83c77000a8941d54f23ea2266c3c7eeffa1351fe21f4a22825285b3f32e",
+    "waves": [
+      {
+        "label": "c1-negative",
+        "rows": [
+          {
+            "kind": "negative",
+            "case_id": "c1-negative-negative-0",
+            "client_request_id": "qual-b2bc58e2928740df8ba022d30b9a9837",
+            "content_sha256": "374b38f66ae20ce5f9ce019d4b4c33bd2ee5d24ada42bb7f6894687e26d8885f",
+            "passed": true,
+            "checks": {
+              "pass_verdict": true,
+              "no_regressions": true
+            },
+            "http_status": 200,
+            "finish_reason": "stop",
+            "done_count": 1,
+            "prompt_tokens": 1774,
+            "cached_tokens": 0,
+            "completion_tokens": 515,
+            "reasoning_tokens": 485,
+            "e2e_s": 6.054912725929171,
+            "ttft_s": 0.866396581986919
+          }
+        ]
+      },
+      {
+        "label": "c1-visual-r1",
+        "rows": [
+          {
+            "kind": "visual",
+            "case_id": "c1-visual-r1-visual-0",
+            "client_request_id": "qual-2675822e4259412a83de42863416a04a",
+            "content_sha256": "49c1097d7e25f32d1e353d3a34692c907329d0b018abb389b3036e258e62dd29",
+            "passed": true,
+            "checks": {
+              "fail_verdict": true,
+              "three_or_more": true,
+              "header_search_clip": true,
+              "positive_red": true,
+              "value_column_clip": true
+            },
+            "http_status": 200,
+            "finish_reason": "stop",
+            "done_count": 1,
+            "prompt_tokens": 1774,
+            "cached_tokens": 0,
+            "completion_tokens": 1438,
+            "reasoning_tokens": 1238,
+            "e2e_s": 15.446554385125637,
+            "ttft_s": 0.8367559001781046
+          }
+        ]
+      },
+      {
+        "label": "c1-visual-r2",
+        "rows": [
+          {
+            "kind": "visual",
+            "case_id": "c1-visual-r2-visual-0",
+            "client_request_id": "qual-76d28ff9949045ca8008f556f23085df",
+            "content_sha256": "56b108c7a553972a14e01095d4fa6e3e6ea9179e6c94bd72cb3ef02a0602a2cf",
+            "passed": false,
+            "checks": {
+              "fail_verdict": true,
+              "three_or_more": true,
+              "header_search_clip": false,
+              "positive_red": true,
+              "value_column_clip": true
+            },
+            "http_status": 200,
+            "finish_reason": "stop",
+            "done_count": 1,
+            "prompt_tokens": 1774,
+            "cached_tokens": 0,
+            "completion_tokens": 1467,
+            "reasoning_tokens": 1326,
+            "e2e_s": 15.747916606953368,
+            "ttft_s": 0.6231457539834082
+          }
+        ]
+      }
+    ]
+  },
+  "restored_comparison_subset": {
+    "status": "PASS",
+    "source_sha256": "84e2e83c77000a8941d54f23ea2266c3c7eeffa1351fe21f4a22825285b3f32e",
+    "waves": [
+      {
+        "label": "c1-visual-r1",
+        "rows": [
+          {
+            "kind": "visual",
+            "case_id": "c1-visual-r1-visual-0",
+            "client_request_id": "qual-8457e17940b44bcabfd54c9a995a5db5",
+            "content_sha256": "9ae3015e28bbd0af3f7bcc4ae89854c1536ea2c67bb2a3fae9ae634bd4197dc1",
+            "passed": true,
+            "checks": {
+              "fail_verdict": true,
+              "three_or_more": true,
+              "header_search_clip": true,
+              "positive_red": true,
+              "value_column_clip": true
+            },
+            "http_status": 200,
+            "finish_reason": "stop",
+            "done_count": 1,
+            "prompt_tokens": 1774,
+            "cached_tokens": 0,
+            "completion_tokens": 1101,
+            "reasoning_tokens": 948,
+            "e2e_s": 15.699902099790052,
+            "ttft_s": 2.258032595971599
+          }
+        ]
+      },
+      {
+        "label": "c1-visual-r2",
+        "rows": [
+          {
+            "kind": "visual",
+            "case_id": "c1-visual-r2-visual-0",
+            "client_request_id": "qual-34db15020342486ab9bfe009ba1fb4b9",
+            "content_sha256": "9ae3015e28bbd0af3f7bcc4ae89854c1536ea2c67bb2a3fae9ae634bd4197dc1",
+            "passed": true,
+            "checks": {
+              "fail_verdict": true,
+              "three_or_more": true,
+              "header_search_clip": true,
+              "positive_red": true,
+              "value_column_clip": true
+            },
+            "http_status": 200,
+            "finish_reason": "stop",
+            "done_count": 1,
+            "prompt_tokens": 1774,
+            "cached_tokens": 0,
+            "completion_tokens": 1101,
+            "reasoning_tokens": 948,
+            "e2e_s": 15.224039620021358,
+            "ttft_s": 2.2033251491375268
+          }
+        ]
+      }
+    ]
+  }
+}

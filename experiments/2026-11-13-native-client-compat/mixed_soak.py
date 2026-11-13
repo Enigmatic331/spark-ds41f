@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from release_probes import probe
+from archived_visual import run as archived_visual
 
 
 def main():
@@ -21,6 +22,12 @@ def main():
     import candidate_qualification as q
     client = q.ApiClient(args.base_url.removesuffix("/v1"), args.model, None, 10)
     args.output_dir.mkdir(mode=0o700, exist_ok=False)
+    archive_args = SimpleNamespace(**vars(args), output=args.output_dir/"archived-visual.json",
+                                   private_failure_dir=args.output_dir/"local-synthetic-failures")
+    if archived_visual(archive_args) != 0:
+        (args.output_dir/"status.json").write_text(json.dumps({
+            "status":"NOT_STARTED", "reason":"archived visual qualification failed", "waves":0})+"\n")
+        return 2
     start = time.monotonic()
     state = {"status": "RUNNING", "waves": 0, "started_epoch": time.time()}
     def save():

@@ -125,3 +125,35 @@ The baseline's 1,548 integers are exactly the first 1,548 of the candidate's
 1,948. Claude reviewed the interpretation; local code and actual receipts
 establish the observed slot limit and output counts. The application-facing
 release decision and authenticated DSH/Sembang acceptance remain open.
+
+## Corrected 17-slot run and visual release gate
+
+With 8,064-token chunks, the native 17-slot boot succeeded. All 18
+interference cells passed on the original checkpoint. With 16 residents, the
+131,081-token prefill took 21.13 s to first output and its longest resident gap
+was 1.10 s. Median resident throughput in visible integer digits/s was
+76.7 before, 19.0 during and 69.0 during recovery. Six images vs matched text
+(4,837 vs 4,851 tokens) yielded max gaps of 2.12 vs 0.71 s. Each resident
+returned the exact solo answer and emitted after injected first output.
+Per-cell percentiles, sampled timing, actual sizes, overlap and checks are
+in `admission-control-17.json`. Single waves do not establish production p95.
+
+The historical unaided visual campaign uses its own questions and scoring.
+The identical-image control and first seeded comparison passed. The second
+seeded comparison failed only the search-field clipping keyword check.
+It stopped normally and reported zero cached prompt tokens. The original
+service passed both isolated seeded comparisons after restoration. The archived
+debug/concurrency cases and the soak did not run past the mandatory failure.
+The stored hash cannot distinguish an omitted defect from alternate wording.
+The experiment now supports private, local retention of the failed **synthetic**
+visible answer for adjudication. No user bodies or reasoning need be collected.
+
+Keep the archived criterion as a gate. The operator decisions are whether the
+separate 2,048-integer absolute-answer test should remain a gate given both
+engines fail, and how to exercise the authenticated DSH/Sembang routes
+(scoped staging routes or a coordinated real-client canary). The operator
+need not change NFS, sudo access or the session-cache setting. A passing
+historical campaign, soak, matched interactive latency and app checks still
+precede promotion. The harness, site flags and reports are AI-assisted
+adaptations over the attributed deployment; Claude reviewed the diagnosis
+and the limits of the keyword oracle.

@@ -1,0 +1,15 @@
+{
+  "scope": "Opt-in site runtime settings, applied after the existing 1107 and client compatibility patches",
+  "native_launcher_flags": [
+    "--default-chat-template-kwargs", "{\"reasoning_effort\":\"low\"}",
+    "--override-generation-config", "{\"temperature\":1.0,\"top_p\":1.0,\"top_k\":20,\"max_new_tokens\":131072}"
+  ],
+  "environment": {
+    "SPARK_DS41F_MEDIA_DATA_ONLY": "1",
+    "VLLM_MEDIA_URL_ALLOW_REDIRECTS": "0"
+  },
+  "media_connector_sha256_before": "41230d20984205fc1fa711bab4e06cd56962ad542c2e179f82fd730e5da39a06",
+  "media_connector_sha256_after": "fdd722e172d644d077dc21fb35bcab2be2f70c814ddbf47c24d287af3724a80e",
+  "local_file_media": "leave allowed_local_media_path unset",
+  "source": "Apache-2.0 vLLM connector from the same imported pinned stack as patch 0001; these changes are AI-assisted site adaptations"
+}

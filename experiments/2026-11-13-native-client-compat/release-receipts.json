@@ -1,0 +1,428 @@
+{
+  "scope": "native four-rank staging; no production promotion",
+  "receipts": {
+    "tf-release-contract-01.json": {
+      "status": "PASS",
+      "sha256": "5e8edb068c30263ae31e3d9bb5332a10820b759ce85d972215f8c15f086d2d1f",
+      "cases": {
+        "contract-1": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.3410906339995563,
+            "e2e_s": 0.8969587117899209,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 356,
+            "completion_tokens": 77
+          },
+          "follow": {
+            "ttft_s": 0.38809926179237664,
+            "e2e_s": 0.7371248358394951,
+            "finish_reason": "stop",
+            "prompt_tokens": 527,
+            "completion_tokens": 43
+          }
+        },
+        "contract-2": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.3373516690917313,
+            "e2e_s": 0.9384822470601648,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 359,
+            "completion_tokens": 80
+          },
+          "follow": {
+            "ttft_s": 0.3865413989406079,
+            "e2e_s": 0.77800282696262,
+            "finish_reason": "stop",
+            "prompt_tokens": 538,
+            "completion_tokens": 48
+          }
+        },
+        "contract-3": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.33473478304222226,
+            "e2e_s": 0.9359231370035559,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 360,
+            "completion_tokens": 81
+          },
+          "follow": {
+            "ttft_s": 0.3875807242002338,
+            "e2e_s": 0.7399607561528683,
+            "finish_reason": "stop",
+            "prompt_tokens": 534,
+            "completion_tokens": 42
+          }
+        },
+        "remote_media_refusal": {
+          "passed": true,
+          "status": 400
+        },
+        "sql-1": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.2178708070423454,
+          "e2e_s": 0.5238429219461977
+        },
+        "sql-2": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.1673847280908376,
+          "e2e_s": 0.4411602730397135
+        },
+        "sql-3": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.1674262599553913,
+          "e2e_s": 0.44242444494739175
+        }
+      }
+    },
+    "release-MBjVbxyI/release-contract.json": {
+      "status": "FAIL",
+      "sha256": "88c4f0a218b29b8c52cb6bbbae0d416b9a1ebe33ae1e4ce72ce17660a9d015d1",
+      "cases": {
+        "render_defaults": {
+          "passed": false,
+          "status": 404,
+          "failed_variant": "omitted"
+        }
+      },
+      "failed": "render_defaults"
+    },
+    "release-0TWbsRMn/edge.json": {
+      "status": "FAIL",
+      "sha256": "ded39afb562aabe4be2469debc9e6ec31945d0a05fafdbb7b47f7a047d193e61",
+      "phases": {
+        "natural_eos_five": true
+      },
+      "failure": {
+        "message": "server did not record cancelled generation",
+        "type": "RuntimeError"
+      }
+    },
+    "release-0TWbsRMn/release-contract.json": {
+      "status": "PASS",
+      "sha256": "b29fb9315133f433dce0c35c1bd096d52de00915c73df12289a7a146abda615c",
+      "cases": {
+        "contract-1": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.4152424659114331,
+            "e2e_s": 0.757832801900804,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 357,
+            "completion_tokens": 77
+          },
+          "follow": {
+            "ttft_s": 0.2916207911912352,
+            "e2e_s": 0.5989450020715594,
+            "finish_reason": "stop",
+            "prompt_tokens": 528,
+            "completion_tokens": 43
+          }
+        },
+        "contract-2": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.37137347203679383,
+            "e2e_s": 0.7271499829366803,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 360,
+            "completion_tokens": 80
+          },
+          "follow": {
+            "ttft_s": 0.3004006249830127,
+            "e2e_s": 0.6112810159102082,
+            "finish_reason": "stop",
+            "prompt_tokens": 539,
+            "completion_tokens": 48
+          }
+        },
+        "contract-3": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.3716452729422599,
+            "e2e_s": 0.7159975690301508,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 361,
+            "completion_tokens": 81
+          },
+          "follow": {
+            "ttft_s": 0.2777506201528013,
+            "e2e_s": 0.601812687003985,
+            "finish_reason": "stop",
+            "prompt_tokens": 535,
+            "completion_tokens": 42
+          }
+        },
+        "long_text_plus_images": {
+          "passed": true,
+          "prompt_tokens": 32842,
+          "cached_tokens": 0,
+          "completion_tokens": 31,
+          "ttft_s": 6.999114281032234,
+          "e2e_s": 7.183955739950761,
+          "checks": {
+            "image_count": true,
+            "long_prompt": true,
+            "pair_count": true,
+            "positive_is_red": true,
+            "search_clipped": true,
+            "value_clipped": true
+          }
+        },
+        "remote_media_refusal": {
+          "passed": true,
+          "status": 400
+        },
+        "render_defaults": {
+          "passed": true,
+          "checks": {
+            "default_matches_low": true,
+            "high_differs": true,
+            "max_distinct": true,
+            "medium_matches_high": true,
+            "minimal_matches_low": true,
+            "off_differs": true,
+            "off_matches_template": true,
+            "smaller_limit": true,
+            "ultra_matches_max": true,
+            "xhigh_matches_high": true
+          },
+          "render_hashes": {
+            "high": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf",
+            "low": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+            "max": "cbb9ed79910602eec25dec4aa85785a651c2dbb139aac6c57730d540eb92034f",
+            "medium": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf",
+            "minimal": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+            "off": "ff7329906c241497946f9dfa91b3e9f07b70ed7abc89fd88ee8c510162a6020e",
+            "omitted": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+            "template-off": "ff7329906c241497946f9dfa91b3e9f07b70ed7abc89fd88ee8c510162a6020e",
+            "ultra": "cbb9ed79910602eec25dec4aa85785a651c2dbb139aac6c57730d540eb92034f",
+            "xhigh": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf"
+          }
+        },
+        "simultaneous_images_text_tools": {
+          "passed": true,
+          "parallel_pass": [
+            true,
+            true,
+            true,
+            true
+          ]
+        },
+        "sql-1": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.1949352901428938,
+          "e2e_s": 0.37097824015654624
+        },
+        "sql-2": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.1775400168262422,
+          "e2e_s": 0.3552024350501597
+        },
+        "sql-3": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.16523623908869922,
+          "e2e_s": 0.3372801181394607
+        }
+      }
+    },
+    "release-XbFr8stL/edge.json": {
+      "status": "PASS",
+      "sha256": "d44c14fbbece0a1a729b90385b0e3b1aff6a2ba1ca201137380cfe9a4ae75066",
+      "phases": {
+        "cancellation_recovery": true,
+        "long_context": true,
+        "natural_eos_five": true
+      },
+      "observed_context": [
+        {
+          "observed_prompt_tokens": 32815,
+          "ttft_s": 3.980071204015985,
+          "e2e_s": 4.0185203140135854,
+          "passed": true
+        },
+        {
+          "observed_prompt_tokens": 131116,
+          "ttft_s": 16.218206094112247,
+          "e2e_s": 16.221767709124833,
+          "passed": true
+        },
+        {
+          "observed_prompt_tokens": 262192,
+          "ttft_s": 34.0708716660738,
+          "e2e_s": 34.07513601705432,
+          "passed": true
+        }
+      ],
+      "disconnect": {
+        "observed_running_before_close": 1,
+        "running_after_close": 0,
+        "waiting_after_close": 0,
+        "drain_s": 0.037573855835944414,
+        "server_abort_delta": 0
+      }
+    },
+    "release-XbFr8stL/load.json": {
+      "status": "FAIL",
+      "sha256": "316fca8166c5035ff1df5720f0069f8d1a005805e86c163b85c444f0752e106a",
+      "reason": "finish_reason_mismatch"
+    },
+    "release-XbFr8stL/release-contract.json": {
+      "status": "PASS",
+      "sha256": "f847952f712cd31da52634c1eea0269846c4a5fa76a128e87410e9e96b526728",
+      "cases": {
+        "contract-1": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.40564700891263783,
+            "e2e_s": 0.7473798289429396,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 357,
+            "completion_tokens": 77
+          },
+          "follow": {
+            "ttft_s": 0.29271217598579824,
+            "e2e_s": 0.5986875689122826,
+            "finish_reason": "stop",
+            "prompt_tokens": 528,
+            "completion_tokens": 43
+          }
+        },
+        "contract-2": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.37167593999765813,
+            "e2e_s": 0.7259967520367354,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 360,
+            "completion_tokens": 80
+          },
+          "follow": {
+            "ttft_s": 0.29743165406398475,
+            "e2e_s": 0.6088839790318161,
+            "finish_reason": "stop",
+            "prompt_tokens": 539,
+            "completion_tokens": 48
+          }
+        },
+        "contract-3": {
+          "passed": true,
+          "call": {
+            "ttft_s": 0.3743965218309313,
+            "e2e_s": 0.7273767648730427,
+            "finish_reason": "tool_calls",
+            "prompt_tokens": 361,
+            "completion_tokens": 81
+          },
+          "follow": {
+            "ttft_s": 0.27932324283756316,
+            "e2e_s": 0.6019005598500371,
+            "finish_reason": "stop",
+            "prompt_tokens": 535,
+            "completion_tokens": 42
+          }
+        },
+        "long_text_plus_images": {
+          "passed": true,
+          "prompt_tokens": 32842,
+          "cached_tokens": 0,
+          "completion_tokens": 31,
+          "ttft_s": 8.069120010826737,
+          "e2e_s": 8.243105909787118,
+          "checks": {
+            "image_count": true,
+            "long_prompt": true,
+            "pair_count": true,
+            "positive_is_red": true,
+            "search_clipped": true,
+            "value_clipped": true
+          }
+        },
+        "remote_media_refusal": {
+          "passed": true,
+          "status": 400
+        },
+        "render_defaults": {
+          "passed": true,
+          "checks": {
+            "default_matches_low": true,
+            "high_differs": true,
+            "max_distinct": true,
+            "medium_matches_high": true,
+            "minimal_matches_low": true,
+            "off_differs": true,
+            "off_matches_template": true,
+            "smaller_limit": true,
+            "ultra_matches_max": true,
+            "xhigh_matches_high": true
+          },
+          "render_hashes": {
+            "high": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf",
+            "low": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+            "max": "cbb9ed79910602eec25dec4aa85785a651c2dbb139aac6c57730d540eb92034f",
+            "medium": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf",
+            "minimal": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+            "off": "ff7329906c241497946f9dfa91b3e9f07b70ed7abc89fd88ee8c510162a6020e",
+            "omitted": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+            "template-off": "ff7329906c241497946f9dfa91b3e9f07b70ed7abc89fd88ee8c510162a6020e",
+            "ultra": "cbb9ed79910602eec25dec4aa85785a651c2dbb139aac6c57730d540eb92034f",
+            "xhigh": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf"
+          }
+        },
+        "simultaneous_images_text_tools": {
+          "passed": true,
+          "parallel_pass": [
+            true,
+            true,
+            true,
+            true
+          ]
+        },
+        "sql-1": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.1913203711155802,
+          "e2e_s": 0.3680448750965297
+        },
+        "sql-2": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.17717059003189206,
+          "e2e_s": 0.35272185294888914
+        },
+        "sql-3": {
+          "passed": true,
+          "prompt_tokens": 53,
+          "cached_tokens": 0,
+          "completion_tokens": 32,
+          "ttft_s": 0.16418869304470718,
+          "e2e_s": 0.33608034206554294
+        }
+      }
+    }
+  }
+}

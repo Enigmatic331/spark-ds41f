@@ -1,0 +1,10 @@
+diff --git a/vllm/multimodal/media/connector.py b/vllm/multimodal/media/connector.py
+--- a/vllm/multimodal/media/connector.py
++++ b/vllm/multimodal/media/connector.py
+@@ -355,3 +355,6 @@
+     def _assert_url_in_allowed_media_domains(self, url_spec: Url) -> None:
++        # Opt-in native site policy: check before cache lookup or network I/O.
++        if os.environ.get("SPARK_DS41F_MEDIA_DATA_ONLY") == "1":
++            raise ValueError("Remote media URLs are disabled; send a base64 data URL.")
+         if (
+             self.allowed_media_domains

@@ -1,0 +1,26 @@
+diff --git a/vllm/entrypoints/openai/chat_completion/protocol.py b/vllm/entrypoints/openai/chat_completion/protocol.py
+--- a/vllm/entrypoints/openai/chat_completion/protocol.py
++++ b/vllm/entrypoints/openai/chat_completion/protocol.py
+@@ -78,6 +78,10 @@
+         data = handler(self)
+         if len(data.get("tool_calls", [])) == 0:
+             data.pop("tool_calls", None)
++        if data.get("reasoning") is not None:
++            # Preserve the legacy field consumed by the existing DSH/Sembang
++            # clients while retaining current vLLM's canonical field.
++            data["reasoning_content"] = data["reasoning"]
+         return data
+ 
+ 
+diff --git a/vllm/entrypoints/generate/base/protocol.py b/vllm/entrypoints/generate/base/protocol.py
+--- a/vllm/entrypoints/generate/base/protocol.py
++++ b/vllm/entrypoints/generate/base/protocol.py
+@@ -359,4 +359,8 @@
+         data = handler(self)
+         if len(data.get("tool_calls", [])) == 0:
+             data.pop("tool_calls", None)
++        if data.get("reasoning") is not None:
++            # Preserve the legacy field consumed by the existing DSH/Sembang
++            # clients while retaining current vLLM's canonical field.
++            data["reasoning_content"] = data["reasoning"]
+         return data

@@ -101,8 +101,9 @@ python3 probe_staged_media_policy.py \
   --base-url http://STAGING:PORT/v1 --model MODEL --no-auth
 ```
 
-The staged gate passes only when both exact URL image requests return 200,
-terminate with `finish_reason=stop`, and their final content passes the original
+The staged gate gives each request 2,048 completion tokens with explicit low
+reasoning, `temperature=0`, and seed 17. It passes only when both exact URL
+image requests return 200, terminate with `finish_reason=stop`, and their final content passes the original
 known-answer checks: shapes must include red/circle/blue/square-or-rectangle,
 `SPARK3`, and `42`; card must include `DeepSeek` and `173`. All three negative
 cases (loopback untrusted host, same-host redirect-shaped query, and a

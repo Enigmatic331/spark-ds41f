@@ -57,7 +57,10 @@ def payload(model: str, image_url: str, question: str) -> bytes:
                     ],
                 }
             ],
-            "max_tokens": 256,
+            "max_tokens": 2048,
+            "temperature": 0.0,
+            "seed": 17,
+            "chat_template_kwargs": {"reasoning_effort": "low"},
             "stream": False,
         },
         separators=(",", ":"),

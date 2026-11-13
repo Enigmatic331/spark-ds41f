@@ -1,0 +1,131 @@
+From c8c77f132cf21af4eaa04325d5733e5001c89f8c Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 04:01:14 +0800
+Subject: [PATCH] test(dsv41): trace sequence-parallel target rows
+
+Keep the bounded accuracy diagnostic aligned with rank-local prefill rows while retaining replicated decode positions. This diagnostic commit is newly implemented and AI-assisted on top of the imported Christopher Owen/vLLM build baseline; it is not a claim of upstream authorship.
+---
+ .../test_deepseek_v4_1_accuracy_trace.py      | 19 +++++++++++++
+ vllm/models/deepseek_v4_1/accuracy_trace.py   | 28 ++++++++++++++++++-
+ vllm/models/deepseek_v4_1/nvidia/model.py     | 19 ++++++++++---
+ 3 files changed, 61 insertions(+), 5 deletions(-)
+
+diff --git a/tests/models/test_deepseek_v4_1_accuracy_trace.py b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+index 04e0698e0..d238b106b 100644
+--- a/tests/models/test_deepseek_v4_1_accuracy_trace.py
++++ b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+@@ -53,3 +53,22 @@ def test_logit_sources_are_separate(monkeypatch, tmp_path):
+ 
+     assert len(list(tmp_path.glob("r2-served-logits.jsonl"))) == 1
+     assert len(list(tmp_path.glob("r2-torch_ref-logits.jsonl"))) == 1
++
++
++def test_positions_for_sequence_parallel_tensor(monkeypatch, tmp_path):
++    class Rows:
++        @staticmethod
++        def local_slice(value: torch.Tensor) -> torch.Tensor:
++            return value[4:8]
++
++    trace = _trace_module(monkeypatch, tmp_path)
++    positions = torch.arange(12)
++    local_tensor = torch.empty(4, 3)
++    replicated_tensor = torch.empty(12, 3)
++    assert torch.equal(
++        trace.positions_for_tensor(positions, local_tensor, Rows()),
++        positions[4:8],
++    )
++    assert trace.positions_for_tensor(
++        positions, replicated_tensor, Rows()
++    ) is positions
+diff --git a/vllm/models/deepseek_v4_1/accuracy_trace.py b/vllm/models/deepseek_v4_1/accuracy_trace.py
+index 8eed55136..4b62df5dc 100644
+--- a/vllm/models/deepseek_v4_1/accuracy_trace.py
++++ b/vllm/models/deepseek_v4_1/accuracy_trace.py
+@@ -139,6 +139,26 @@ def trace_positioned(
+     )
+ 
+ 
++def positions_for_tensor(
++    positions: torch.Tensor,
++    tensor: torch.Tensor,
++    sp_rows: object | None,
++) -> torch.Tensor:
++    """Return positions matching a replicated or sequence-parallel tensor.
++
++    Prefill sequence parallelism keeps only this rank's contiguous row slice,
++    while decode rows are replicated. This helper is intentionally duck-typed
++    so the diagnostic module does not import the serving-only SPRows class.
++    """
++    if tensor.shape[0] == positions.numel():
++        return positions
++    if sp_rows is not None:
++        local_positions = sp_rows.local_slice(positions)
++        if tensor.shape[0] == local_positions.numel():
++            return local_positions
++    return positions
++
++
+ def trace_logits(logits: torch.Tensor, *, source: str = "served") -> None:
+     """Append competing-token values and a small top set for the last row."""
+     global _logit_call
+@@ -176,4 +196,10 @@ def trace_logits(logits: torch.Tensor, *, source: str = "served") -> None:
+         os.close(descriptor)
+ 
+ 
+-__all__ = ["ENABLED", "trace_logits", "trace_positioned", "trace_tensor"]
++__all__ = [
++    "ENABLED",
++    "positions_for_tensor",
++    "trace_logits",
++    "trace_positioned",
++    "trace_tensor",
++]
+diff --git a/vllm/models/deepseek_v4_1/nvidia/model.py b/vllm/models/deepseek_v4_1/nvidia/model.py
+index 651ba33c3..7783b9d54 100644
+--- a/vllm/models/deepseek_v4_1/nvidia/model.py
++++ b/vllm/models/deepseek_v4_1/nvidia/model.py
+@@ -432,8 +432,11 @@ class DeepseekV4DecoderLayer(nn.Module):
+                     else ced_input_ids
+                 )
+         if accuracy_trace.ENABLED:
++            trace_positions = accuracy_trace.positions_for_tensor(
++                positions, x, sp_rows
++            )
+             accuracy_trace.trace_positioned(
+-                "attn_in", positions, x, layer=self.layer_id
++                "attn_in", trace_positions, x, layer=self.layer_id
+             )
+         if sp_rows is None:
+             with kernels.mxfp8_inputs(x_q):
+@@ -458,12 +461,15 @@ class DeepseekV4DecoderLayer(nn.Module):
+         )
+         del attn_pre
+         if accuracy_trace.ENABLED:
++            trace_positions = accuracy_trace.positions_for_tensor(
++                positions, x, sp_rows
++            )
+             accuracy_trace.trace_positioned(
+-                "moe_in", positions, x, layer=self.layer_id
++                "moe_in", trace_positions, x, layer=self.layer_id
+             )
+             router = getattr(self.ffn.experts, "router", None)
+             if router is not None:
+-                router._accuracy_trace_positions = positions
++                router._accuracy_trace_positions = trace_positions
+                 router._accuracy_trace_layer = self.layer_id
+         if sp_rows is None:
+             with kernels.mxfp8_inputs(x_q):
+@@ -1160,7 +1166,12 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
+                 else self.norm(hidden_states, out)
+             )
+         if accuracy_trace.ENABLED:
+-            accuracy_trace.trace_positioned("head_in", positions, hidden_states)
++            trace_positions = accuracy_trace.positions_for_tensor(
++                positions, hidden_states, sp
++            )
++            accuracy_trace.trace_positioned(
++                "head_in", trace_positions, hidden_states
++            )
+         if sp is not None:
+             hidden_states = sp.gather(hidden_states)
+         if decoder_compacted:

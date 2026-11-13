@@ -1,0 +1,31 @@
+From c32911467905dc580a610b002f352150a906fc03 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 06:20:46 +0800
+Subject: [PATCH] feat(dsv41): add exact-mode CED bypass
+
+Diagnostic A/B switch for the imported Christopher/vLLM build baseline. AI-assisted by OpenAI Codex; default behavior is unchanged and this is not yet a qualified production fix.
+---
+ vllm/models/deepseek_v4_1/ced.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/vllm/models/deepseek_v4_1/ced.py b/vllm/models/deepseek_v4_1/ced.py
+index 8ecaa4fde..d06143f31 100644
+--- a/vllm/models/deepseek_v4_1/ced.py
++++ b/vllm/models/deepseek_v4_1/ced.py
+@@ -4,6 +4,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ from bisect import bisect_left
+ from dataclasses import dataclass, replace
+ from typing import TYPE_CHECKING, Any
+@@ -24,6 +25,8 @@ KEEP_ALL = 2**31 - 1
+ 
+ def ced_decoder_start(hf_config: Any) -> int | None:
+     """Find the full-resolution KV source following the compressed encoder."""
++    if os.environ.get("VLLM_DS41_DISABLE_CED") == "1":
++        return None
+     ratios = getattr(hf_config, "compress_ratios", ())
+     layers = getattr(hf_config, "num_hidden_layers", len(ratios))
+     for source in sorted(getattr(hf_config, "kv_source_layer_ids", ())):

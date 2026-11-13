@@ -1,0 +1,172 @@
+From 823aa58ad82861b9a66fb43a159d0175234ddfc0 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 04:35:47 +0800
+Subject: [PATCH] test(dsv41): gate traces until request replay
+
+Keep startup profiling and warmup rows out of the numerical evidence by requiring an owner-only activation sentinel. This diagnostic commit is newly implemented and AI-assisted on top of the imported Christopher Owen/vLLM build baseline; it is not a claim of upstream authorship.
+---
+ .../model_executor/layers/logits_processor.py |  8 +++++
+ vllm/models/deepseek_v4_1/accuracy_trace.py   | 33 ++++++++++++++++---
+ vllm/models/deepseek_v4_1/nvidia/model.py     |  6 ++--
+ vllm/models/deepseek_v4_1/tilelang/router.py  |  2 +-
+ 4 files changed, 41 insertions(+), 8 deletions(-)
+
+diff --git a/vllm/model_executor/layers/logits_processor.py b/vllm/model_executor/layers/logits_processor.py
+index 7abb6c0fe..5af15c892 100644
+--- a/vllm/model_executor/layers/logits_processor.py
++++ b/vllm/model_executor/layers/logits_processor.py
+@@ -366,6 +366,11 @@ class LogitsProcessor(PluggableLayer):
+             reference_weight = getattr(
+                 lm_head, "_accuracy_trace_bf16_weight", None
+             )
++            if _DS41_ACCURACY_TRACE and reference_weight is not None:
++                from vllm.models.deepseek_v4_1.accuracy_trace import active
++
++                if not active():
++                    reference_weight = None
+             if _DS41_ACCURACY_TRACE and reference_weight is not None:
+                 if embedding_bias is not None:
+                     raise RuntimeError(
+@@ -441,6 +446,9 @@ class LogitsProcessor(PluggableLayer):
+                     source="fp64_local",
+                 )
+             if _DS41_ACCURACY_TRACE:
++                from vllm.models.deepseek_v4_1.accuracy_trace import active
++
++            if _DS41_ACCURACY_TRACE and active():
+                 from vllm.models.deepseek_v4_1.accuracy_trace import trace_logits
+ 
+                 trace_logits(logits, source="served")
+diff --git a/vllm/models/deepseek_v4_1/accuracy_trace.py b/vllm/models/deepseek_v4_1/accuracy_trace.py
+index a5bbec394..a840e8d4e 100644
+--- a/vllm/models/deepseek_v4_1/accuracy_trace.py
++++ b/vllm/models/deepseek_v4_1/accuracy_trace.py
+@@ -20,6 +20,7 @@ import torch
+ 
+ TRACE_DIR = os.environ.get("VLLM_DS41_ACCURACY_TRACE_DIR")
+ ENABLED = bool(TRACE_DIR)
++ENABLE_FILE = os.environ.get("VLLM_DS41_ACCURACY_TRACE_ENABLE_FILE")
+ TARGET_POSITION = int(os.environ.get("VLLM_DS41_ACCURACY_TRACE_POSITION", "-1"))
+ TOKEN_IDS = tuple(
+     int(item)
+@@ -32,6 +33,29 @@ _SAFE_NAME = re.compile(r"^[a-z0-9_]+$")
+ _root: Path | None = None
+ _counter = 0
+ _logit_call = 0
++_active_latched = False
++
++
++def active() -> bool:
++    """Return whether the externally armed request trace may write.
++
++    The optional enable file prevents startup profiling/warmup rows from being
++    mistaken for request evidence. Once a validated regular owner-only file is
++    observed, tracing stays active for the lifetime of this diagnostic worker.
++    """
++    global _active_latched
++    if not ENABLED:
++        return False
++    if _active_latched or ENABLE_FILE is None:
++        return True
++    try:
++        info = os.lstat(ENABLE_FILE)
++    except FileNotFoundError:
++        return False
++    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
++        raise RuntimeError("accuracy trace enable file must be owner-only and regular")
++    _active_latched = True
++    return True
+ 
+ 
+ def _trace_root() -> Path:
+@@ -79,7 +103,7 @@ def trace_tensor(
+ ) -> None:
+     """Write one tensor and a small integrity/shape sidecar."""
+     global _counter
+-    if not ENABLED:
++    if not active():
+         return
+     if not _SAFE_NAME.fullmatch(stage):
+         raise ValueError(f"unsafe accuracy trace stage: {stage!r}")
+@@ -118,7 +142,7 @@ def trace_positioned(
+     layer: int | None = None,
+ ) -> None:
+     """Trace ``tensor``'s row whose absolute token position is configured."""
+-    if not ENABLED or TARGET_POSITION < 0:
++    if not active() or TARGET_POSITION < 0:
+         return
+     flat_positions = positions.reshape(-1)
+     if tensor.shape[0] != flat_positions.numel():
+@@ -162,7 +186,7 @@ def positions_for_tensor(
+ def trace_logits(logits: torch.Tensor, *, source: str = "served") -> None:
+     """Append competing-token values and a small top set for the last row."""
+     global _logit_call
+-    if not ENABLED or logits.numel() == 0:
++    if not active() or logits.numel() == 0:
+         return
+     if not _SAFE_NAME.fullmatch(source):
+         raise ValueError(f"unsafe accuracy trace logit source: {source!r}")
+@@ -203,7 +227,7 @@ def trace_selected_logits(
+ ) -> None:
+     """Append independently computed values for selected global token IDs."""
+     global _logit_call
+-    if not ENABLED or not selected:
++    if not active() or not selected:
+         return
+     if not _SAFE_NAME.fullmatch(source):
+         raise ValueError(f"unsafe accuracy trace logit source: {source!r}")
+@@ -233,6 +257,7 @@ def trace_selected_logits(
+ 
+ __all__ = [
+     "ENABLED",
++    "active",
+     "positions_for_tensor",
+     "trace_logits",
+     "trace_positioned",
+diff --git a/vllm/models/deepseek_v4_1/nvidia/model.py b/vllm/models/deepseek_v4_1/nvidia/model.py
+index 7783b9d54..de6502d59 100644
+--- a/vllm/models/deepseek_v4_1/nvidia/model.py
++++ b/vllm/models/deepseek_v4_1/nvidia/model.py
+@@ -431,7 +431,7 @@ class DeepseekV4DecoderLayer(nn.Module):
+                     if ced_input_ids is None
+                     else ced_input_ids
+                 )
+-        if accuracy_trace.ENABLED:
++        if accuracy_trace.active():
+             trace_positions = accuracy_trace.positions_for_tensor(
+                 positions, x, sp_rows
+             )
+@@ -460,7 +460,7 @@ class DeepseekV4DecoderLayer(nn.Module):
+             attn_pre,
+         )
+         del attn_pre
+-        if accuracy_trace.ENABLED:
++        if accuracy_trace.active():
+             trace_positions = accuracy_trace.positions_for_tensor(
+                 positions, x, sp_rows
+             )
+@@ -1165,7 +1165,7 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
+                 if out is None
+                 else self.norm(hidden_states, out)
+             )
+-        if accuracy_trace.ENABLED:
++        if accuracy_trace.active():
+             trace_positions = accuracy_trace.positions_for_tensor(
+                 positions, hidden_states, sp
+             )
+diff --git a/vllm/models/deepseek_v4_1/tilelang/router.py b/vllm/models/deepseek_v4_1/tilelang/router.py
+index f55454156..05a7587fa 100644
+--- a/vllm/models/deepseek_v4_1/tilelang/router.py
++++ b/vllm/models/deepseek_v4_1/tilelang/router.py
+@@ -1205,7 +1205,7 @@ class TileLangGateRouter(TileKernelsRouter):
+     ) -> tuple[torch.Tensor, torch.Tensor]:
+         from .. import accuracy_trace
+ 
+-        if not accuracy_trace.ENABLED:
++        if not accuracy_trace.active():
+             return topk_weights, topk_ids
+         positions = getattr(self, "_accuracy_trace_positions", None)
+         layer = getattr(self, "_accuracy_trace_layer", None)
+-- 
+2.43.0
+

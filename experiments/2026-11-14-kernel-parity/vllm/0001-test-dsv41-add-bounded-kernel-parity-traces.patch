@@ -1,0 +1,402 @@
+From 644b00ca0136a38d30db0eaafd7cae3c040f6550 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 03:38:02 +0800
+Subject: [PATCH] test(dsv41): add bounded kernel-parity traces
+
+New diagnostic layer implemented for the locked TensorFold parity investigation. It is inert unless explicitly enabled and records numerical state only.
+
+Provenance: based on imported vLLM patch head 2756478b60b9. AI-assisted by OpenAI Codex; Claude Code reviewed the diagnostic design, not the implementation or evidence.
+---
+ .../test_deepseek_v4_1_accuracy_trace.py      |  44 +++++
+ .../model_executor/layers/logits_processor.py |   6 +
+ vllm/models/deepseek_v4_1/accuracy_trace.py   | 176 ++++++++++++++++++
+ vllm/models/deepseek_v4_1/nvidia/model.py     |  17 +-
+ vllm/models/deepseek_v4_1/tilelang/router.py  |  29 ++-
+ 5 files changed, 268 insertions(+), 4 deletions(-)
+ create mode 100644 tests/models/test_deepseek_v4_1_accuracy_trace.py
+ create mode 100644 vllm/models/deepseek_v4_1/accuracy_trace.py
+
+diff --git a/tests/models/test_deepseek_v4_1_accuracy_trace.py b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+new file mode 100644
+index 000000000..794af1955
+--- /dev/null
++++ b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+@@ -0,0 +1,44 @@
++import importlib
++import json
++
++import pytest
++import torch
++
++
++def _trace_module(monkeypatch, root):
++    monkeypatch.setenv("VLLM_DS41_ACCURACY_TRACE_DIR", str(root))
++    monkeypatch.setenv("VLLM_DS41_ACCURACY_TRACE_POSITION", "7")
++    from vllm.models.deepseek_v4_1 import accuracy_trace
++
++    trace = importlib.reload(accuracy_trace)
++    monkeypatch.setattr(trace, "_rank", lambda: 2)
++    return trace
++
++
++def test_positioned_trace_is_bounded_and_has_integrity_metadata(
++    monkeypatch, tmp_path
++):
++    tmp_path.chmod(0o700)
++    trace = _trace_module(monkeypatch, tmp_path)
++    values = torch.arange(12, dtype=torch.float32).reshape(3, 4).to(torch.bfloat16)
++    trace.trace_positioned(
++        "attn_in", torch.tensor([6, 7, 8]), values, layer=3
++    )
++
++    binaries = list(tmp_path.glob("*.bin"))
++    sidecars = list(tmp_path.glob("*.json"))
++    assert len(binaries) == len(sidecars) == 1
++    metadata = json.loads(sidecars[0].read_text())
++    assert metadata["dtype"] == "torch.bfloat16"
++    assert metadata["layer"] == 3
++    assert metadata["position"] == 7
++    assert metadata["rank"] == 2
++    assert metadata["shape"] == [4]
++    assert metadata["nbytes"] == binaries[0].stat().st_size == 8
++
++
++def test_trace_rejects_group_writable_directory(monkeypatch, tmp_path):
++    tmp_path.chmod(0o770)
++    trace = _trace_module(monkeypatch, tmp_path)
++    with pytest.raises(RuntimeError, match="group/world writable"):
++        trace.trace_tensor("head_in", torch.ones(2))
+diff --git a/vllm/model_executor/layers/logits_processor.py b/vllm/model_executor/layers/logits_processor.py
+index 469d831e1..749273301 100644
+--- a/vllm/model_executor/layers/logits_processor.py
++++ b/vllm/model_executor/layers/logits_processor.py
+@@ -4,6 +4,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ from collections.abc import Callable, Sequence
+ from functools import cache
+ from typing import TYPE_CHECKING
+@@ -30,6 +31,7 @@ if TYPE_CHECKING:
+     from vllm.utils.b12x import B12xPreparationUnit, B12xWorkload
+ 
+ logger = init_logger(__name__)
++_DS41_ACCURACY_TRACE = bool(os.environ.get("VLLM_DS41_ACCURACY_TRACE_DIR"))
+ 
+ 
+ @cache
+@@ -367,6 +369,10 @@ class LogitsProcessor(PluggableLayer):
+ 
+             if self.scale != 1.0:
+                 logits *= self.scale
++            if _DS41_ACCURACY_TRACE:
++                from vllm.models.deepseek_v4_1.accuracy_trace import trace_logits
++
++                trace_logits(logits)
+         return logits
+ 
+     def _gather_logits(self, logits: torch.Tensor) -> torch.Tensor:
+diff --git a/vllm/models/deepseek_v4_1/accuracy_trace.py b/vllm/models/deepseek_v4_1/accuracy_trace.py
+new file mode 100644
+index 000000000..23e33dd09
+--- /dev/null
++++ b/vllm/models/deepseek_v4_1/accuracy_trace.py
+@@ -0,0 +1,176 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Bounded, opt-in numerical traces for DS4.1 accuracy diagnosis.
++
++This module is inert unless ``VLLM_DS41_ACCURACY_TRACE_DIR`` is set before the
++worker starts. Trace runs must disable CUDA graphs. The output contains tensor
++bytes and numerical token IDs/logits only; callers must not pass request bodies,
++images, credentials, or weights.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import re
++import stat
++from pathlib import Path
++
++import torch
++
++TRACE_DIR = os.environ.get("VLLM_DS41_ACCURACY_TRACE_DIR")
++ENABLED = bool(TRACE_DIR)
++TARGET_POSITION = int(os.environ.get("VLLM_DS41_ACCURACY_TRACE_POSITION", "-1"))
++TOKEN_IDS = tuple(
++    int(item)
++    for item in os.environ.get("VLLM_DS41_ACCURACY_TRACE_TOKEN_IDS", "16,469").split(",")
++    if item.strip()
++)
++TOPK = int(os.environ.get("VLLM_DS41_ACCURACY_TRACE_TOPK", "20"))
++
++_SAFE_NAME = re.compile(r"^[a-z0-9_]+$")
++_root: Path | None = None
++_counter = 0
++_logit_call = 0
++
++
++def _trace_root() -> Path:
++    global _root
++    if _root is not None:
++        return _root
++    if not ENABLED or TRACE_DIR is None:
++        raise RuntimeError("DS4.1 accuracy tracing is disabled")
++    root = Path(TRACE_DIR)
++    info = root.lstat()
++    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
++        raise RuntimeError("accuracy trace directory must be a real directory")
++    if info.st_mode & 0o022:
++        raise RuntimeError("accuracy trace directory must not be group/world writable")
++    _root = root.resolve(strict=True)
++    return _root
++
++
++def _rank() -> int:
++    from vllm.distributed import get_tensor_model_parallel_rank
++
++    return get_tensor_model_parallel_rank()
++
++
++def _write_exclusive(path: Path, payload: bytes) -> None:
++    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
++    if hasattr(os, "O_NOFOLLOW"):
++        flags |= os.O_NOFOLLOW
++    descriptor = os.open(path, flags, 0o600)
++    try:
++        with os.fdopen(descriptor, "wb", closefd=False) as handle:
++            handle.write(payload)
++            handle.flush()
++            os.fsync(handle.fileno())
++    finally:
++        os.close(descriptor)
++
++
++def trace_tensor(
++    stage: str,
++    tensor: torch.Tensor,
++    *,
++    layer: int | None = None,
++    position: int | None = None,
++) -> None:
++    """Write one tensor and a small integrity/shape sidecar."""
++    global _counter
++    if not ENABLED:
++        return
++    if not _SAFE_NAME.fullmatch(stage):
++        raise ValueError(f"unsafe accuracy trace stage: {stage!r}")
++    if torch.cuda.is_current_stream_capturing():
++        raise RuntimeError("accuracy tracing requires CUDA graphs to be disabled")
++    value = tensor.detach().contiguous().cpu()
++    payload = value.view(torch.uint8).numpy().tobytes()
++    serial = _counter
++    _counter += 1
++    layer_part = "na" if layer is None else f"{layer:02d}"
++    pos_part = "na" if position is None else str(position)
++    stem = f"r{_rank()}-n{serial:06d}-{stage}-l{layer_part}-p{pos_part}"
++    root = _trace_root()
++    _write_exclusive(root / f"{stem}.bin", payload)
++    metadata = {
++        "dtype": str(value.dtype),
++        "layer": layer,
++        "nbytes": len(payload),
++        "position": position,
++        "rank": _rank(),
++        "sha256": hashlib.sha256(payload).hexdigest(),
++        "shape": list(value.shape),
++        "stage": stage,
++    }
++    _write_exclusive(
++        root / f"{stem}.json",
++        (json.dumps(metadata, sort_keys=True) + "\n").encode("utf-8"),
++    )
++
++
++def trace_positioned(
++    stage: str,
++    positions: torch.Tensor,
++    tensor: torch.Tensor,
++    *,
++    layer: int | None = None,
++) -> None:
++    """Trace ``tensor``'s row whose absolute token position is configured."""
++    if not ENABLED or TARGET_POSITION < 0:
++        return
++    flat_positions = positions.reshape(-1)
++    if tensor.shape[0] != flat_positions.numel():
++        return
++    matches = torch.nonzero(flat_positions == TARGET_POSITION, as_tuple=False)
++    if matches.numel() == 0:
++        return
++    if matches.shape[0] != 1:
++        raise RuntimeError(
++            f"accuracy trace position {TARGET_POSITION} occurs {matches.shape[0]} times"
++        )
++    row = int(matches[0, 0].item())
++    trace_tensor(
++        stage,
++        tensor[row],
++        layer=layer,
++        position=TARGET_POSITION,
++    )
++
++
++def trace_logits(logits: torch.Tensor) -> None:
++    """Append competing-token values and a small top set for the last row."""
++    global _logit_call
++    if not ENABLED or logits.numel() == 0:
++        return
++    if torch.cuda.is_current_stream_capturing():
++        raise RuntimeError("accuracy tracing requires CUDA graphs to be disabled")
++    row = logits.reshape(-1, logits.shape[-1])[-1].detach()
++    valid_ids = [token_id for token_id in TOKEN_IDS if 0 <= token_id < row.shape[0]]
++    top_count = min(TOPK, row.shape[0])
++    top_values, top_ids = torch.topk(row, top_count, sorted=True)
++    record = {
++        "call": _logit_call,
++        "dtype": str(row.dtype),
++        "rank": _rank(),
++        "selected": {
++            str(token_id): float(row[token_id].item()) for token_id in valid_ids
++        },
++        "top_ids": [int(item) for item in top_ids.cpu().tolist()],
++        "top_values": [float(item) for item in top_values.cpu().tolist()],
++    }
++    _logit_call += 1
++    path = _trace_root() / f"r{_rank()}-logits.jsonl"
++    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
++    if hasattr(os, "O_NOFOLLOW"):
++        flags |= os.O_NOFOLLOW
++    descriptor = os.open(path, flags, 0o600)
++    try:
++        os.write(descriptor, (json.dumps(record, sort_keys=True) + "\n").encode())
++        os.fsync(descriptor)
++    finally:
++        os.close(descriptor)
++
++
++__all__ = ["ENABLED", "trace_logits", "trace_positioned", "trace_tensor"]
+diff --git a/vllm/models/deepseek_v4_1/nvidia/model.py b/vllm/models/deepseek_v4_1/nvidia/model.py
+index b5baa9f0a..651ba33c3 100644
+--- a/vllm/models/deepseek_v4_1/nvidia/model.py
++++ b/vllm/models/deepseek_v4_1/nvidia/model.py
+@@ -53,7 +53,7 @@ from vllm.v1.attention.backends.registry import AttentionBackendEnum
+ from vllm.v1.sample.sink import SinkConfig
+ from vllm.v1.worker.ubatching import dbo_current_ubatch_id
+ 
+-from .. import kernels, l2_prefetch, sp_prefill
++from .. import accuracy_trace, kernels, l2_prefetch, sp_prefill
+ from ..attention import DeepseekV4Attention
+ from ..ced import ced_decoder_start, gather_rows, gather_sp_rows, scatter_rows
+ from ..common.engram import Engram, EngramLayout, NgramHashState
+@@ -88,6 +88,7 @@ class DeepseekV4DecoderLayer(nn.Module):
+         super().__init__()
+ 
+         config = vllm_config.model_config.hf_config
++        self.layer_id = extract_layer_index(prefix)
+         self.hidden_size = config.hidden_size
+ 
+         self.engram: Engram | None = None
+@@ -430,6 +431,10 @@ class DeepseekV4DecoderLayer(nn.Module):
+                     if ced_input_ids is None
+                     else ced_input_ids
+                 )
++        if accuracy_trace.ENABLED:
++            accuracy_trace.trace_positioned(
++                "attn_in", positions, x, layer=self.layer_id
++            )
+         if sp_rows is None:
+             with kernels.mxfp8_inputs(x_q):
+                 x = self.attn(positions, x, None)
+@@ -452,6 +457,14 @@ class DeepseekV4DecoderLayer(nn.Module):
+             attn_pre,
+         )
+         del attn_pre
++        if accuracy_trace.ENABLED:
++            accuracy_trace.trace_positioned(
++                "moe_in", positions, x, layer=self.layer_id
++            )
++            router = getattr(self.ffn.experts, "router", None)
++            if router is not None:
++                router._accuracy_trace_positions = positions
++                router._accuracy_trace_layer = self.layer_id
+         if sp_rows is None:
+             with kernels.mxfp8_inputs(x_q):
+                 x = self.ffn(x, input_ids)
+@@ -1146,6 +1159,8 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
+                 if out is None
+                 else self.norm(hidden_states, out)
+             )
++        if accuracy_trace.ENABLED:
++            accuracy_trace.trace_positioned("head_in", positions, hidden_states)
+         if sp is not None:
+             hidden_states = sp.gather(hidden_states)
+         if decoder_compacted:
+diff --git a/vllm/models/deepseek_v4_1/tilelang/router.py b/vllm/models/deepseek_v4_1/tilelang/router.py
+index 61ece0f4d..f55454156 100644
+--- a/vllm/models/deepseek_v4_1/tilelang/router.py
++++ b/vllm/models/deepseek_v4_1/tilelang/router.py
+@@ -1198,6 +1198,28 @@ class TileLangGateRouter(TileKernelsRouter):
+             x, x, torch.int64, input_ids=input_ids, sp_rows=sp_rows
+         )
+ 
++    def _trace_routing(
++        self,
++        topk_weights: torch.Tensor,
++        topk_ids: torch.Tensor,
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++        from .. import accuracy_trace
++
++        if not accuracy_trace.ENABLED:
++            return topk_weights, topk_ids
++        positions = getattr(self, "_accuracy_trace_positions", None)
++        layer = getattr(self, "_accuracy_trace_layer", None)
++        if positions is not None:
++            accuracy_trace.trace_positioned(
++                "route_ids", positions, topk_ids, layer=layer
++            )
++            accuracy_trace.trace_positioned(
++                "route_weights", positions, topk_weights, layer=layer
++            )
++        self._accuracy_trace_positions = None
++        self._accuracy_trace_layer = None
++        return topk_weights, topk_ids
++
+     def _compute_routing(
+         self,
+         hidden_states: torch.Tensor,
+@@ -1222,19 +1244,20 @@ class TileLangGateRouter(TileKernelsRouter):
+                 )
+             if post_gate is not None:
+                 post_gate()
+-            return provided
++            return self._trace_routing(*provided)
+         specs = _partial_specs(gate, x.shape[0])
+         if not specs:
+             logits, _ = gate(x)
+             if post_gate is not None:
+                 post_gate()
+-            return super()._compute_routing(
++            weights, ids = super()._compute_routing(
+                 hidden_states,
+                 logits,
+                 indices_type,
+                 input_ids=input_ids,
+                 sp_rows=sp_rows,
+             )
++            return self._trace_routing(weights, ids)
+         if indices_type not in (None, torch.int64):
+             raise ValueError(
+                 f"TileLang routing writes int64 expert ids, not {indices_type}"
+@@ -1289,4 +1312,4 @@ class TileLangGateRouter(TileKernelsRouter):
+             topk_weights,
+             self.routed_scaling_factor,
+         )
+-        return topk_weights, topk_ids
++        return self._trace_routing(topk_weights, topk_ids)
+-- 
+2.43.0
+

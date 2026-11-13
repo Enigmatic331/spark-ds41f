@@ -1,0 +1,151 @@
+From 8c81c6fe200859689f65a0f6f59f1511296c3d5e Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 04:06:55 +0800
+Subject: [PATCH] test(dsv41): add independent fp64 head control
+
+Compute the two competing vocabulary rows in CPU FP64 on their owning shard before distributed gather. This diagnostic commit is newly implemented and AI-assisted, incorporating a Claude Code review concern, on top of the imported Christopher Owen/vLLM build baseline; it is not a claim of upstream authorship.
+---
+ .../test_deepseek_v4_1_accuracy_trace.py      | 12 ++++++
+ .../model_executor/layers/logits_processor.py | 43 +++++++++++++++++++
+ vllm/models/deepseek_v4_1/accuracy_trace.py   | 36 ++++++++++++++++
+ 3 files changed, 91 insertions(+)
+
+diff --git a/tests/models/test_deepseek_v4_1_accuracy_trace.py b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+index d238b106b..1dc4c17dd 100644
+--- a/tests/models/test_deepseek_v4_1_accuracy_trace.py
++++ b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+@@ -72,3 +72,15 @@ def test_positions_for_sequence_parallel_tensor(monkeypatch, tmp_path):
+     assert trace.positions_for_tensor(
+         positions, replicated_tensor, Rows()
+     ) is positions
++
++
++def test_selected_logit_trace_is_local_and_separate(monkeypatch, tmp_path):
++    tmp_path.chmod(0o700)
++    trace = _trace_module(monkeypatch, tmp_path)
++    trace.trace_selected_logits({16: 1.25, 469: 1.5}, source="fp64_local")
++    rows = (tmp_path / "r2-fp64_local-logits.jsonl").read_text().splitlines()
++    assert len(rows) == 1
++    record = json.loads(rows[0])
++    assert record["dtype"] == "torch.float64"
++    assert record["local_selected_only"] is True
++    assert record["top_ids"] == [469, 16]
+diff --git a/vllm/model_executor/layers/logits_processor.py b/vllm/model_executor/layers/logits_processor.py
+index c99056d3c..7abb6c0fe 100644
+--- a/vllm/model_executor/layers/logits_processor.py
++++ b/vllm/model_executor/layers/logits_processor.py
+@@ -355,6 +355,7 @@ class LogitsProcessor(PluggableLayer):
+         skip_gather: bool = False,
+     ) -> torch.Tensor | None:
+         reference_logits = None
++        local_fp64_logits = None
+         if self.logits_as_input:
+             logits = hidden_states
+         else:
+@@ -379,6 +380,25 @@ class LogitsProcessor(PluggableLayer):
+                     reference_logits = self._gather_logits(reference_logits)
+                 if reference_logits is not None:
+                     reference_logits = reference_logits[..., : self.org_vocab_size]
++                from vllm.models.deepseek_v4_1.accuracy_trace import TOKEN_IDS
++
++                shard = lm_head.shard_indices
++                start = shard.org_vocab_start_index
++                end = shard.org_vocab_end_index
++                hidden_row = hidden_states.reshape(
++                    -1, hidden_states.shape[-1]
++                )[-1].detach().cpu().to(torch.float64)
++                local_fp64_logits = {
++                    token_id: torch.dot(
++                        hidden_row,
++                        reference_weight[token_id - start]
++                        .detach()
++                        .cpu()
++                        .to(torch.float64),
++                    )
++                    for token_id in TOKEN_IDS
++                    if start <= token_id < end
++                }
+         if logits is not None:
+             if self.soft_cap is not None:
+                 logits = logits / self.soft_cap
+@@ -397,6 +417,29 @@ class LogitsProcessor(PluggableLayer):
+                 from vllm.models.deepseek_v4_1.accuracy_trace import trace_logits
+ 
+                 trace_logits(reference_logits, source="torch_ref")
++            if local_fp64_logits:
++                if self.soft_cap is not None:
++                    local_fp64_logits = {
++                        token_id: torch.tanh(value / self.soft_cap)
++                        * self.soft_cap
++                        for token_id, value in local_fp64_logits.items()
++                    }
++                if self.scale != 1.0:
++                    local_fp64_logits = {
++                        token_id: value * self.scale
++                        for token_id, value in local_fp64_logits.items()
++                    }
++                from vllm.models.deepseek_v4_1.accuracy_trace import (
++                    trace_selected_logits,
++                )
++
++                trace_selected_logits(
++                    {
++                        token_id: float(value.item())
++                        for token_id, value in local_fp64_logits.items()
++                    },
++                    source="fp64_local",
++                )
+             if _DS41_ACCURACY_TRACE:
+                 from vllm.models.deepseek_v4_1.accuracy_trace import trace_logits
+ 
+diff --git a/vllm/models/deepseek_v4_1/accuracy_trace.py b/vllm/models/deepseek_v4_1/accuracy_trace.py
+index 4b62df5dc..a5bbec394 100644
+--- a/vllm/models/deepseek_v4_1/accuracy_trace.py
++++ b/vllm/models/deepseek_v4_1/accuracy_trace.py
+@@ -196,10 +196,46 @@ def trace_logits(logits: torch.Tensor, *, source: str = "served") -> None:
+         os.close(descriptor)
+ 
+ 
++def trace_selected_logits(
++    selected: dict[int, float],
++    *,
++    source: str,
++) -> None:
++    """Append independently computed values for selected global token IDs."""
++    global _logit_call
++    if not ENABLED or not selected:
++        return
++    if not _SAFE_NAME.fullmatch(source):
++        raise ValueError(f"unsafe accuracy trace logit source: {source!r}")
++    ordered = sorted(selected, key=selected.__getitem__, reverse=True)
++    record = {
++        "call": _logit_call,
++        "dtype": "torch.float64",
++        "local_selected_only": True,
++        "rank": _rank(),
++        "source": source,
++        "selected": {str(token_id): selected[token_id] for token_id in sorted(selected)},
++        "top_ids": ordered,
++        "top_values": [selected[token_id] for token_id in ordered],
++    }
++    _logit_call += 1
++    path = _trace_root() / f"r{_rank()}-{source}-logits.jsonl"
++    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
++    if hasattr(os, "O_NOFOLLOW"):
++        flags |= os.O_NOFOLLOW
++    descriptor = os.open(path, flags, 0o600)
++    try:
++        os.write(descriptor, (json.dumps(record, sort_keys=True) + "\n").encode())
++        os.fsync(descriptor)
++    finally:
++        os.close(descriptor)
++
++
+ __all__ = [
+     "ENABLED",
+     "positions_for_tensor",
+     "trace_logits",
+     "trace_positioned",
++    "trace_selected_logits",
+     "trace_tensor",
+ ]

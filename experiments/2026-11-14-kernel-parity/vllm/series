@@ -1,0 +1,10 @@
+0001-test-dsv41-add-bounded-kernel-parity-traces.patch
+0002-test-dsv41-compare-served-and-torch-head-logits.patch
+0003-test-dsv41-trace-sequence-parallel-target-rows.patch
+0004-test-dsv41-add-independent-fp64-head-control.patch
+0005-test-dsv41-gate-traces-until-request-replay.patch
+0006-test-dsv41-trace-sparse-attention-boundary.patch
+0007-test-dsv41-trace-sparse-attention-operands.patch
+0008-feat-dsv41-add-exact-mode-CED-bypass.patch
+0009-feat-dsv41-warm-CED-replay-for-exact-retained-states.patch
+0010-fix-dsv41-propagate-CED-warmup-through-decoder-depth.patch

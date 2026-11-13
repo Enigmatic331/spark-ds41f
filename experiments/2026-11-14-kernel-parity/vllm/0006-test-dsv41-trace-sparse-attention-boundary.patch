@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 05:08:51 +0800
+Subject: [PATCH] test(dsv41): trace sparse attention boundary
+
+Capture index-query bytes, head weights, candidate blocks, selected sparse keys, metadata, and attention outputs at the target position. This diagnostic commit is newly implemented and AI-assisted on top of the imported Christopher Owen/vLLM build baseline; it is not a claim of upstream authorship.
+---
+ .../test_deepseek_v4_1_accuracy_trace.py      | 15 ++++++
+ vllm/models/deepseek_v4_1/attention.py        | 53 ++++++++++++++++++-
+ 2 files changed, 67 insertions(+), 1 deletion(-)
+
+diff --git a/tests/models/test_deepseek_v4_1_accuracy_trace.py b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+index 1dc4c17dd..20e4d52c6 100644
+--- a/tests/models/test_deepseek_v4_1_accuracy_trace.py
++++ b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+@@ -74,6 +74,21 @@ def test_positions_for_sequence_parallel_tensor(monkeypatch, tmp_path):
+     ) is positions
+ 
+ 
++def test_positioned_trace_accepts_integer_index_metadata(monkeypatch, tmp_path):
++    tmp_path.chmod(0o700)
++    trace = _trace_module(monkeypatch, tmp_path)
++    values = torch.tensor([[1, -1], [2, 3], [4, 5]], dtype=torch.int32)
++    trace.trace_positioned(
++        "index_selected", torch.tensor([6, 7, 8]), values, layer=21
++    )
++
++    sidecar = next(tmp_path.glob("*.json"))
++    metadata = json.loads(sidecar.read_text())
++    assert metadata["dtype"] == "torch.int32"
++    assert metadata["shape"] == [2]
++    assert metadata["layer"] == 21
++
++
+ def test_selected_logit_trace_is_local_and_separate(monkeypatch, tmp_path):
+     tmp_path.chmod(0o700)
+     trace = _trace_module(monkeypatch, tmp_path)
+diff --git a/vllm/models/deepseek_v4_1/attention.py b/vllm/models/deepseek_v4_1/attention.py
+index cf600a675..fcc4810ff 100644
+--- a/vllm/models/deepseek_v4_1/attention.py
++++ b/vllm/models/deepseek_v4_1/attention.py
+@@ -34,7 +34,7 @@ from vllm.model_executor.layers.linear import (
+ from vllm.model_executor.parameter import BlockQuantScaleParameter
+ from vllm.model_executor.utils import set_weight_attrs
+ from vllm.model_executor.weight_transfer import copy_weight
+-from vllm.models.deepseek_v4_1 import kernels, l2_prefetch, sp_prefill
++from vllm.models.deepseek_v4_1 import accuracy_trace, kernels, l2_prefetch, sp_prefill
+ from vllm.models.deepseek_v4_1.ced import ced_decoder_start
+ from vllm.models.deepseek_v4_1.compressor import DeepseekCompressor
+ from vllm.models.deepseek_v4_1.quant_config import Block32FP8LinearMethod
+@@ -1344,6 +1344,16 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase):
+             if index_weights is not None
+             else self.indexer.weights_proj(hidden_states)[first:last]
+         )
++        if accuracy_trace.active():
++            accuracy_trace.trace_positioned(
++                "index_query_data", pos_rows, iq_data, layer=self.layer_id
++            )
++            accuracy_trace.trace_positioned(
++                "index_query_scale", pos_rows, iq_scale, layer=self.layer_id
++            )
++            accuracy_trace.trace_positioned(
++                "index_weights", pos_rows, weights, layer=self.layer_id
++            )
+         return iq_data, iq_scale, weights  # the projection applied the scale
+ 
+     @staticmethod
+@@ -1569,6 +1579,27 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase):
+                         output_indices=selected[offset:end],
+                         **candidate_args,
+                     )
++                    if accuracy_trace.active():
++                        trace_positions = positions[row:row_end]
++                        accuracy_trace.trace_positioned(
++                            "index_selected",
++                            trace_positions,
++                            selected[offset:end],
++                            layer=self.layer_id,
++                        )
++                        if self.layer_id == self.candidate_source_layer:
++                            accuracy_trace.trace_positioned(
++                                "candidate_blocks",
++                                trace_positions,
++                                self._candidates[row:row_end],
++                                layer=self.layer_id,
++                            )
++                            accuracy_trace.trace_positioned(
++                                "candidate_lengths",
++                                trace_positions,
++                                self._candidate_lens[row:row_end].unsqueeze(-1),
++                                layer=self.layer_id,
++                            )
+ 
+             if split is None:
+                 select(query, 0, self.topk_indices_buffer)
+@@ -1677,6 +1708,26 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase):
+             swa_lengths=swa_lengths[:rows],
+             **kwargs,
+         )
++        if accuracy_trace.active():
++            accuracy_trace.trace_positioned(
++                "mla_out", positions, output, layer=self.layer_id
++            )
++            accuracy_trace.trace_positioned(
++                "swa_selected", positions, swa_indices[:rows], layer=self.layer_id
++            )
++            accuracy_trace.trace_positioned(
++                "swa_lengths",
++                positions,
++                swa_lengths[:rows].unsqueeze(-1),
++                layer=self.layer_id,
++            )
++            if main is not None:
++                accuracy_trace.trace_positioned(
++                    "indexed_lengths",
++                    positions,
++                    top_lengths[:rows].unsqueeze(-1),
++                    layer=self.layer_id,
++                )
+ 
+     def _shared_decode_metadata(self, swa, main, rows, specs, device):
+         replay = self._replay_start(swa)

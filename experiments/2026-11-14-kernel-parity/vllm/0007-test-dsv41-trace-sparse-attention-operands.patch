@@ -1,0 +1,189 @@
+From 17021eca29590f75a028550f8cfc1683b333e482 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 05:45:21 +0800
+Subject: [PATCH] test(dsv41): trace sparse attention operands
+
+Diagnostic-only instrumentation on the imported Christopher/vLLM build baseline. AI-assisted by OpenAI Codex; not a production fix and not upstream-ready.
+---
+ .../test_deepseek_v4_1_accuracy_trace.py      |  9 ++
+ vllm/models/deepseek_v4_1/accuracy_trace.py   | 17 ++++
+ vllm/models/deepseek_v4_1/attention.py        | 99 +++++++++++++++++++
+ 3 files changed, 125 insertions(+)
+
+diff --git a/tests/models/test_deepseek_v4_1_accuracy_trace.py b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+index 20e4d52c6..d47e1f1d4 100644
+--- a/tests/models/test_deepseek_v4_1_accuracy_trace.py
++++ b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+@@ -89,6 +89,15 @@ def test_positioned_trace_accepts_integer_index_metadata(monkeypatch, tmp_path):
+     assert metadata["layer"] == 21
+ 
+ 
++def test_target_row_is_unique_and_optional(monkeypatch, tmp_path):
++    tmp_path.chmod(0o700)
++    trace = _trace_module(monkeypatch, tmp_path)
++    assert trace.target_row(torch.tensor([5, 7, 9])) == 1
++    assert trace.target_row(torch.tensor([5, 6, 9])) is None
++    with pytest.raises(RuntimeError, match="occurs 2 times"):
++        trace.target_row(torch.tensor([7, 6, 7]))
++
++
+ def test_selected_logit_trace_is_local_and_separate(monkeypatch, tmp_path):
+     tmp_path.chmod(0o700)
+     trace = _trace_module(monkeypatch, tmp_path)
+diff --git a/vllm/models/deepseek_v4_1/accuracy_trace.py b/vllm/models/deepseek_v4_1/accuracy_trace.py
+index a840e8d4e..00f71f4d3 100644
+--- a/vllm/models/deepseek_v4_1/accuracy_trace.py
++++ b/vllm/models/deepseek_v4_1/accuracy_trace.py
+@@ -163,6 +163,22 @@ def trace_positioned(
+     )
+ 
+ 
++def target_row(positions: torch.Tensor) -> int | None:
++    """Return the unique configured-position row, or ``None`` when absent."""
++    if not active() or TARGET_POSITION < 0:
++        return None
++    matches = torch.nonzero(
++        positions.reshape(-1) == TARGET_POSITION, as_tuple=False
++    )
++    if matches.numel() == 0:
++        return None
++    if matches.shape[0] != 1:
++        raise RuntimeError(
++            f"accuracy trace position {TARGET_POSITION} occurs {matches.shape[0]} times"
++        )
++    return int(matches[0, 0].item())
++
++
+ def positions_for_tensor(
+     positions: torch.Tensor,
+     tensor: torch.Tensor,
+@@ -263,4 +279,5 @@ __all__ = [
+     "trace_positioned",
+     "trace_selected_logits",
+     "trace_tensor",
++    "target_row",
+ ]
+diff --git a/vllm/models/deepseek_v4_1/attention.py b/vllm/models/deepseek_v4_1/attention.py
+index fcc4810ff..614a66846 100644
+--- a/vllm/models/deepseek_v4_1/attention.py
++++ b/vllm/models/deepseek_v4_1/attention.py
+@@ -1429,6 +1429,16 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase):
+         mode = "decode" if swa.is_decode else "extend"
+         rows = q.shape[0]
+         self._check_attention_rows(mode, rows)
++        if accuracy_trace.active() and self.layer_id in (
++            self.candidate_source_layer,
++            self.candidate_source_layer + 1,
++        ):
++            accuracy_trace.trace_positioned(
++                "attention_q", positions, q, layer=self.layer_id
++            )
++            accuracy_trace.trace_positioned(
++                "attention_kv", positions, kv, layer=self.layer_id
++            )
+         # A mixed step's decode requests, its leading rows (the batch is reordered
+         # decode-first), keep the decode plan and the decode index mode: a row's
+         # arithmetic must not depend on whether a prefill shares its step.
+@@ -1696,6 +1706,19 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase):
+                 indexed_lengths=top_lengths[:rows],
+                 indexed_page_table=metadata_buffers[3][:rows],
+             )
++        if accuracy_trace.active() and self.layer_id in (
++            self.candidate_source_layer,
++            self.candidate_source_layer + 1,
++        ):
++            self._trace_attention_cache_records(
++                positions,
++                swa_indices[:rows],
++                swa_lengths[:rows],
++                main,
++                owner,
++                top_lengths[:rows],
++                metadata_buffers[3][:rows] if main is not None else None,
++            )
+         # Keep the borrowed arena, not aliases of the transient query storage.
+         retain_cuda_graph_capture_resource(arena)
+         self._attend(
+@@ -1729,6 +1752,82 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase):
+                     layer=self.layer_id,
+                 )
+ 
++    @staticmethod
++    def _raw_cache_records(cache, physical_slots, page_size, record_bytes):
++        """Gather raw byte records for already validated physical slots."""
++        slots = physical_slots.to(torch.int64)
++        pages = torch.div(slots, page_size, rounding_mode="floor")
++        offsets = torch.remainder(slots, page_size)
++        columns = offsets[:, None] * record_bytes + torch.arange(
++            record_bytes, dtype=torch.int64, device=cache.device
++        )[None, :]
++        return cache[pages[:, None], columns]
++
++    def _trace_attention_cache_records(
++        self,
++        positions,
++        swa_indices,
++        swa_lengths,
++        main,
++        owner,
++        top_lengths,
++        indexed_page_table,
++    ):
++        """Trace only the target row's selected raw cache records.
++
++        This distinguishes cache-content drift from sparse-MLA schedule drift
++        without copying an entire request's cache or any request text.
++        """
++        row = accuracy_trace.target_row(positions)
++        if row is None:
++            return
++        position = accuracy_trace.TARGET_POSITION
++        swa_length = int(swa_lengths[row].item())
++        swa_slots = swa_indices[row, :swa_length]
++        accuracy_trace.trace_tensor(
++            "swa_physical_slots",
++            swa_slots,
++            layer=self.layer_id,
++            position=position,
++        )
++        accuracy_trace.trace_tensor(
++            "swa_records",
++            self._raw_cache_records(
++                self.swa_cache_layer.kv_cache,
++                swa_slots,
++                self.swa_cache_layer.block_size,
++                528,
++            ),
++            layer=self.layer_id,
++            position=position,
++        )
++        if main is None or indexed_page_table is None:
++            return
++        indexed_length = int(top_lengths[row].item())
++        logical = owner.topk_indices_buffer[row, :indexed_length].to(torch.int64)
++        logical_pages = torch.div(logical, self._main_page, rounding_mode="floor")
++        physical_pages = indexed_page_table[row, logical_pages].to(torch.int64)
++        physical_slots = physical_pages * self._main_page + torch.remainder(
++            logical, self._main_page
++        )
++        accuracy_trace.trace_tensor(
++            "indexed_physical_slots",
++            physical_slots,
++            layer=self.layer_id,
++            position=position,
++        )
++        accuracy_trace.trace_tensor(
++            "indexed_records",
++            self._raw_cache_records(
++                owner.kv_cache,
++                physical_slots,
++                self._main_page,
++                288,
++            ),
++            layer=self.layer_id,
++            position=position,
++        )
++
+     def _shared_decode_metadata(self, swa, main, rows, specs, device):
+         replay = self._replay_start(swa)
+         key = (

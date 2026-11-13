@@ -1,0 +1,163 @@
+From 2e1965c998907a66b824939abe82afd2f82ea13b Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 03:43:27 +0800
+Subject: [PATCH] test(dsv41): compare served and torch head logits
+
+Diagnostic-only A/B from the identical hidden state and exact unpacked BF16 head. It does not alter sampled logits.
+
+Provenance: based on imported vLLM patch head 2756478b60b9 and the preceding AI-assisted trace commit. Implemented by OpenAI Codex.
+---
+ .../test_deepseek_v4_1_accuracy_trace.py      | 11 +++++++
+ .../model_executor/layers/logits_processor.py | 30 ++++++++++++++++++-
+ .../layers/quantization/online/packed_bf16.py | 14 +++++++++
+ vllm/models/deepseek_v4_1/accuracy_trace.py   |  7 +++--
+ 4 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/tests/models/test_deepseek_v4_1_accuracy_trace.py b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+index 794af1955..04e0698e0 100644
+--- a/tests/models/test_deepseek_v4_1_accuracy_trace.py
++++ b/tests/models/test_deepseek_v4_1_accuracy_trace.py
+@@ -42,3 +42,14 @@ def test_trace_rejects_group_writable_directory(monkeypatch, tmp_path):
+     trace = _trace_module(monkeypatch, tmp_path)
+     with pytest.raises(RuntimeError, match="group/world writable"):
+         trace.trace_tensor("head_in", torch.ones(2))
++
++
++def test_logit_sources_are_separate(monkeypatch, tmp_path):
++    tmp_path.chmod(0o700)
++    trace = _trace_module(monkeypatch, tmp_path)
++    logits = torch.arange(32, dtype=torch.float32).reshape(1, 32)
++    trace.trace_logits(logits, source="served")
++    trace.trace_logits(logits + 1, source="torch_ref")
++
++    assert len(list(tmp_path.glob("r2-served-logits.jsonl"))) == 1
++    assert len(list(tmp_path.glob("r2-torch_ref-logits.jsonl"))) == 1
+diff --git a/vllm/model_executor/layers/logits_processor.py b/vllm/model_executor/layers/logits_processor.py
+index 749273301..c99056d3c 100644
+--- a/vllm/model_executor/layers/logits_processor.py
++++ b/vllm/model_executor/layers/logits_processor.py
+@@ -354,6 +354,7 @@ class LogitsProcessor(PluggableLayer):
+         embedding_bias: torch.Tensor | None = None,
+         skip_gather: bool = False,
+     ) -> torch.Tensor | None:
++        reference_logits = None
+         if self.logits_as_input:
+             logits = hidden_states
+         else:
+@@ -361,6 +362,23 @@ class LogitsProcessor(PluggableLayer):
+             logits = self._get_logits(
+                 hidden_states, lm_head, embedding_bias, skip_gather
+             )
++            reference_weight = getattr(
++                lm_head, "_accuracy_trace_bf16_weight", None
++            )
++            if _DS41_ACCURACY_TRACE and reference_weight is not None:
++                if embedding_bias is not None:
++                    raise RuntimeError(
++                        "DS4.1 accuracy head trace does not accept an embedding bias"
++                    )
++                reference_logits = torch.mm(
++                    hidden_states.reshape(-1, hidden_states.shape[-1]),
++                    reference_weight.t(),
++                    out_dtype=self.head_dtype or torch.float32,
++                ).reshape(*hidden_states.shape[:-1], -1)
++                if not skip_gather and lm_head.tp_size > 1:
++                    reference_logits = self._gather_logits(reference_logits)
++                if reference_logits is not None:
++                    reference_logits = reference_logits[..., : self.org_vocab_size]
+         if logits is not None:
+             if self.soft_cap is not None:
+                 logits = logits / self.soft_cap
+@@ -369,10 +387,20 @@ class LogitsProcessor(PluggableLayer):
+ 
+             if self.scale != 1.0:
+                 logits *= self.scale
++            if reference_logits is not None:
++                if self.soft_cap is not None:
++                    reference_logits = torch.tanh(
++                        reference_logits / self.soft_cap
++                    ) * self.soft_cap
++                if self.scale != 1.0:
++                    reference_logits *= self.scale
++                from vllm.models.deepseek_v4_1.accuracy_trace import trace_logits
++
++                trace_logits(reference_logits, source="torch_ref")
+             if _DS41_ACCURACY_TRACE:
+                 from vllm.models.deepseek_v4_1.accuracy_trace import trace_logits
+ 
+-                trace_logits(logits)
++                trace_logits(logits, source="served")
+         return logits
+ 
+     def _gather_logits(self, logits: torch.Tensor) -> torch.Tensor:
+diff --git a/vllm/model_executor/layers/quantization/online/packed_bf16.py b/vllm/model_executor/layers/quantization/online/packed_bf16.py
+index d968db77c..1be80f62c 100644
+--- a/vllm/model_executor/layers/quantization/online/packed_bf16.py
++++ b/vllm/model_executor/layers/quantization/online/packed_bf16.py
+@@ -15,6 +15,7 @@ or TileLang's with the TileLang linear backend.
+ """
+ 
+ import importlib.util
++import os
+ 
+ import torch
+ from torch.nn import Parameter
+@@ -126,6 +127,19 @@ class PackedBf16LmHeadMethod(QuantizeMethodBase):
+             packed.exponent_base + 14,
+             packed.exceptions,
+         )
++        if os.environ.get("VLLM_DS41_ACCURACY_TRACE_HEAD") == "1":
++            from vllm.models.deepseek_v4_1.tilelang.vocab import unpack_bf16_weight
++
++            # Diagnostic only: retain an exact BF16 reconstruction beside the
++            # packed head so LogitsProcessor can compare torch.mm with the
++            # served TileLang projection from the identical hidden state.
++            layer._accuracy_trace_bf16_weight = unpack_bf16_weight(
++                self.packed_weight(layer)
++            )
++            logger.warning_once(
++                "DS4.1 accuracy trace retained an unpacked BF16 head for a "
++                "torch.mm projection comparison"
++            )
+ 
+     def declare_layer_kernels(self, layer: torch.nn.Module) -> None:
+         """With the TileLang backend, declare the packed head's projection: once the
+diff --git a/vllm/models/deepseek_v4_1/accuracy_trace.py b/vllm/models/deepseek_v4_1/accuracy_trace.py
+index 23e33dd09..8eed55136 100644
+--- a/vllm/models/deepseek_v4_1/accuracy_trace.py
++++ b/vllm/models/deepseek_v4_1/accuracy_trace.py
+@@ -139,11 +139,13 @@ def trace_positioned(
+     )
+ 
+ 
+-def trace_logits(logits: torch.Tensor) -> None:
++def trace_logits(logits: torch.Tensor, *, source: str = "served") -> None:
+     """Append competing-token values and a small top set for the last row."""
+     global _logit_call
+     if not ENABLED or logits.numel() == 0:
+         return
++    if not _SAFE_NAME.fullmatch(source):
++        raise ValueError(f"unsafe accuracy trace logit source: {source!r}")
+     if torch.cuda.is_current_stream_capturing():
+         raise RuntimeError("accuracy tracing requires CUDA graphs to be disabled")
+     row = logits.reshape(-1, logits.shape[-1])[-1].detach()
+@@ -154,6 +156,7 @@ def trace_logits(logits: torch.Tensor) -> None:
+         "call": _logit_call,
+         "dtype": str(row.dtype),
+         "rank": _rank(),
++        "source": source,
+         "selected": {
+             str(token_id): float(row[token_id].item()) for token_id in valid_ids
+         },
+@@ -161,7 +164,7 @@ def trace_logits(logits: torch.Tensor) -> None:
+         "top_values": [float(item) for item in top_values.cpu().tolist()],
+     }
+     _logit_call += 1
+-    path = _trace_root() / f"r{_rank()}-logits.jsonl"
++    path = _trace_root() / f"r{_rank()}-{source}-logits.jsonl"
+     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+     if hasattr(os, "O_NOFOLLOW"):
+         flags |= os.O_NOFOLLOW
+-- 
+2.43.0
+

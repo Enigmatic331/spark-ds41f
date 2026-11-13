@@ -9,6 +9,7 @@ import sys
 import threading
 from pathlib import Path
 from uuid import uuid4
+from visual_region_check import search_field_clipped
 
 
 ARCHIVED_SHA = "84e2e83c77000a8941d54f23ea2266c3c7eeffa1351fe21f4a22825285b3f32e"
@@ -46,8 +47,11 @@ def run(args):
                     seed=0, stream=True, stream_options={"include_usage":True}, cache_salt=uuid4().hex)
         c = client.stream_chat(body, f"{label}-{kind}-{index}", barrier=barrier)
         checks = archive.score(kind, c.content)
+        additional = {}
+        if kind == "visual":
+            additional["search_clipping_in_same_region"] = search_field_clipped(checks.get("parsed") or {})
         row = c.safe_summary(args.model)
-        passed = bool(checks["pass"] and c.status==200 and not c.error and c.done_count==1
+        passed = bool(checks["pass"] and all(additional.values()) and c.status==200 and not c.error and c.done_count==1
                       and c.finish_reason=="stop" and row["model_exact"] and row["completion_tokens"]>0)
         if not passed and getattr(args, "private_failure_dir", None) is not None:
             # Only this script's hash-pinned synthetic archive can reach here.
@@ -58,7 +62,8 @@ def run(args):
                 raise ValueError("private failure folder must be owner-only")
             with (folder/(row["client_request_id"]+".json")).open("x") as out:
                 json.dump({"case":label,"content":c.content,"checks":checks["checks"]},out)
-        return dict(kind=kind, checks=checks["checks"], passed=passed, **row)
+        return dict(kind=kind, checks=checks["checks"], archived_score_passed=checks["pass"],
+                    additional_checks=additional, passed=passed, **row)
     for label, kinds in waves:
         barrier = threading.Barrier(len(kinds))
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(kinds)) as pool:

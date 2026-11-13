@@ -25,6 +25,16 @@ This addresses an observed answer omission with an explicit serving policy. A ca
 | Visible debug JSON, both replays | `5997505eb9bfd4444081c1d8f6d00693a18ee62790ab215ae9ea8f59201e6633` |
 | Diagnostic receipt / complete archive / three dashboards | `cf7b07a70912b77ac4df82ff23a1b417cf346b993d0744492d020d1dadc7d190` / `ec54f7d825a4fca493fb6d107a48fc4bd2341138bdc310274e121a24364ac039` / `2048c6fbb87caa574866a4d16d00e72cf1ff9c17bf226c3c77ec55df376e6aff` |
 
+## Sustained 17-slot trial
+
+The same renderer change on 17 slots passed the full original archive (16/16) and all nine search-field region checks. Three concurrent held-out dashboards, original/relabelled/erased annotation controls, and live streaming/non-streaming assistant continuations all passed. The tokenizer API returned 1,136 IDs matching the offline reference byte for byte. Both isolated debug cases produced the same final JSON reported above, with 0.465 and 0.446 seconds to first output and 11.00 and 11.39 seconds end to end. The one matching TensorFold control measured 1.34 and 15.92 seconds respectively.
+
+Over 1,802 seconds the site exercised 142 waves with SQL, two-turn synthetic transfer lookups, six-image comparisons, and long text plus images. All 1,278 streamed calls and 142 expected URL denials passed. Every wave returned to zero active and queued requests. The head's idle active allocation remained at 84.00 GiB. The first 32,919-token plus six-image request was cold (7.25 seconds to first output). Subsequent long requests benefited from prefix reuse.
+
+The tool call's p95 time to first output rose from **0.40 seconds solo to 6.15 seconds** with two concurrent image prompts. Four of 142 mixed tool streams had at least one output gap above three seconds; the longest was **4.47 seconds**. All completed correctly. There is no identical app-level p95 series on TensorFold. The closest older six-image/one-coder baseline measured a worst resident gap of 0.78–0.80 seconds on two runs, with different resident counts and prompts.
+
+At the end of this boot the local-file URL negative returned 500 before accessing the path. That response blocks promotion of the tested media variant. The v2 connector maps disabled file input to a validation error; this branch runs only for local-file media. The intended 16-resident plus one image case did not send any requests on this boot because the wrapper looked in the wrong directory for its invoice fixture. Subsequent release decisions must use an actual protected run of that cell.
+
 ## Provenance
 
 The model and tokenizer originate with DeepSeek. The deployed site checkpoint uses Huihui native FP8 output-projection transplants in 13 layers. The engine is Christopher Owen's 1107 recipe and imported vLLM, TileLang, B12X, FlashInfer and NCCL/SparkNet dependencies. The native ARM64 build, Torch vision adaptation, rank integration and recovery controls are site adaptations. The grounding module, new dashboards and assessment are AI-assisted site work. The historical images, prompts and scorer come from the site's existing October 18 suite. Claude reviewed the diagnostic interpretation. These numbers describe private staging, with no upstream contribution or public client cutover implied.

@@ -6,9 +6,12 @@ the release runner, not here**.
 `spark_pinned_https_media.py` is a generic rank-0 process overlay. At import it
 parses `SPARK_DS41F_MEDIA_HTTPS_ALLOWLIST_JSON`, validates a unique list of one
 to sixteen exact canonical HTTPS URLs, and freezes that list for the process
-lifetime. It then wraps only
-`MediaConnector._assert_url_in_allowed_media_domains` in memory. The canonical
-connector remains SHA256
+lifetime. It wraps `MediaConnector._assert_url_in_allowed_media_domains` in
+memory. Because canonical `file:` dispatch bypasses that method and otherwise
+raises `RuntimeError` when no local path is configured, the overlay also wraps
+`_load_file_url` in data-only mode to raise `ValueError` before any path
+resolution/open. That gives the normal client-error API envelope while the
+canonical connector remains SHA256
 `fdd722e172d644d077dc21fb35bcab2be2f70c814ddbf47c24d287af3724a80e`
 on every rank.
 
@@ -78,7 +81,10 @@ It executes the canonical sync/async URL entry methods around the process-local
 wrapper, tests both allowed URLs, rejects scheme/host/subdomain/userinfo/port/
 query/fragment/path/branch/encoding variants before fake network I/O, checks
 redirect fail-closed behavior, checks invalid operator configs, verifies data,
-file and opt-out behavior, and hashes the canonical file before/after.
+file and opt-out behavior, and hashes the canonical file before/after. A second
+test imports the overlay through the real installed `MediaConnector` and proves
+the nonexistent file sentinel is rejected as `ValueError` before the original
+loader.
 
 Controller TLS/content check:
 
@@ -95,10 +101,13 @@ python3 probe_staged_media_policy.py \
   --base-url http://STAGING:PORT/v1 --model MODEL --no-auth
 ```
 
-The staged gate passes only when both exact URL image requests return 200 with
-non-empty model output and all three negative cases (loopback untrusted host,
-same-host redirect-shaped query, and file URL) return 400 or 422. The negative
-URLs cannot create external egress even if the guard regresses.
+The staged gate passes only when both exact URL image requests return 200,
+terminate with `finish_reason=stop`, and their final content passes the original
+known-answer checks: shapes must include red/circle/blue/square-or-rectangle,
+`SPARK3`, and `42`; card must include `DeepSeek` and `173`. All three negative
+cases (loopback untrusted host, same-host redirect-shaped query, and a
+nonexistent file sentinel) must return 400 or 422. The negative URLs cannot
+create external egress even if the guard regresses.
 
 ## Provenance
 

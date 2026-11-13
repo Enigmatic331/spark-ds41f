@@ -18,19 +18,30 @@ TRUSTED = (
     "2026-09-25-vision/fixtures/shapes.png"
 )
 TRUSTED_FIXTURES = {
-    "shapes": TRUSTED,
-    "card": TRUSTED.replace("shapes.png", "card.png"),
+    "shapes": {
+        "url": TRUSTED,
+        "question": (
+            "Describe the shapes and their colours in this image, and read the text "
+            "in it exactly."
+        ),
+        "expected": (("red",), ("circle",), ("blue",), ("square", "rectangle"), ("SPARK3",), ("42",)),
+    },
+    "card": {
+        "url": TRUSTED.replace("shapes.png", "card.png"),
+        "question": "What is the large title in this image, and what number is shown for Code aggregate?",
+        "expected": (("DeepSeek",), ("173",)),
+    },
 }
 NEGATIVES = {
     # Loopback only if the policy regresses; it cannot create external egress.
     "untrusted_host": "https://127.0.0.1:9/not-fetched.png",
     # Same host/path but no longer the exact URL; rejected before HTTP dispatch.
     "redirect_shaped_query": TRUSTED + "?redirect=https%3A%2F%2F127.0.0.1%3A9%2F",
-    "file_url": "file:///etc/passwd",
+    "file_url": "file:///nonexistent-spark-ds41f-policy-sentinel.png",
 }
 
 
-def payload(model: str, image_url: str) -> bytes:
+def payload(model: str, image_url: str, question: str) -> bytes:
     return json.dumps(
         {
             "model": model,
@@ -40,7 +51,7 @@ def payload(model: str, image_url: str) -> bytes:
                     "content": [
                         {
                             "type": "text",
-                            "text": "Briefly describe the visible shapes and colors in this image.",
+                            "text": question,
                         },
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],
@@ -87,27 +98,48 @@ def main() -> int:
     endpoint = args.base_url.rstrip("/") + "/chat/completions"
 
     result = {"trusted": {}, "negative": {}}
-    for name, image_url in TRUSTED_FIXTURES.items():
+    for name, case in TRUSTED_FIXTURES.items():
         status, raw, elapsed = post(
-            endpoint, key, payload(args.model, image_url), args.timeout
+            endpoint,
+            key,
+            payload(args.model, case["url"], case["question"]),
+            args.timeout,
         )
         if status != 200:
             raise RuntimeError(f"trusted {name} URL returned HTTP {status}")
         parsed = json.loads(raw)
-        message = parsed["choices"][0]["message"]
-        answer = (message.get("content") or "") + (
-            message.get("reasoning_content") or ""
-        )
-        if not answer:
-            raise RuntimeError(f"trusted {name} URL completed without content or reasoning")
+        choice = parsed["choices"][0]
+        message = choice["message"]
+        answer = message.get("content") or ""
+        missing = [
+            " or ".join(options)
+            for options in case["expected"]
+            if not any(option.lower() in answer.lower() for option in options)
+        ]
+        if not answer or missing:
+            raise RuntimeError(
+                f"trusted {name} final content failed known answer: missing {missing}"
+            )
+        if choice.get("finish_reason") != "stop":
+            raise RuntimeError(
+                f"trusted {name} did not terminate normally: {choice.get('finish_reason')!r}"
+            )
         result["trusted"][name] = {
             "status": status,
             "seconds": round(elapsed, 6),
             "response_sha256": hashlib.sha256(raw).hexdigest(),
+            "final_content_sha256": hashlib.sha256(answer.encode()).hexdigest(),
+            "finish_reason": choice.get("finish_reason"),
+            "known_answer": True,
             "request_id": parsed.get("id"),
         }
     for name, image_url in NEGATIVES.items():
-        status, raw, elapsed = post(endpoint, key, payload(args.model, image_url), args.timeout)
+        status, raw, elapsed = post(
+            endpoint,
+            key,
+            payload(args.model, image_url, "Describe this image briefly."),
+            args.timeout,
+        )
         if status not in (400, 422):
             raise RuntimeError(f"{name} returned HTTP {status}, expected 400/422")
         result["negative"][name] = {

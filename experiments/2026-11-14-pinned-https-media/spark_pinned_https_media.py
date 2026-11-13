@@ -23,7 +23,7 @@ from vllm.multimodal.media.connector import MediaConnector
 
 
 ALLOWLIST_ENV = "SPARK_DS41F_MEDIA_HTTPS_ALLOWLIST_JSON"
-_PATCH_MARKER = "spark_ds41f_pinned_https_v1"
+_PATCH_MARKER = "spark_ds41f_pinned_https_v2"
 
 
 def _load_allowlist() -> tuple[frozenset[str], tuple[str, ...]]:
@@ -67,15 +67,18 @@ TRUSTED_URLS, TRUSTED_HOSTS = _load_allowlist()
 
 
 def _install_policy() -> None:
-    current = MediaConnector._assert_url_in_allowed_media_domains
-    if getattr(current, "_spark_ds41f_policy", None) == _PATCH_MARKER:
+    current_url = MediaConnector._assert_url_in_allowed_media_domains
+    current_file = MediaConnector._load_file_url
+    url_marker = getattr(current_url, "_spark_ds41f_policy", None)
+    file_marker = getattr(current_file, "_spark_ds41f_policy", None)
+    if url_marker == _PATCH_MARKER and file_marker == _PATCH_MARKER:
         return
-    if getattr(current, "_spark_ds41f_policy", None) is not None:
-        raise RuntimeError("refusing to replace an unknown MediaConnector policy overlay")
+    if url_marker is not None or file_marker is not None:
+        raise RuntimeError("refusing to replace an unknown or partial MediaConnector policy overlay")
 
     def guarded(self: MediaConnector, url_spec: Any) -> None:
         if os.environ.get("SPARK_DS41F_MEDIA_DATA_ONLY") != "1":
-            current(self, url_spec)
+            current_url(self, url_spec)
             return
         trusted = (
             url_spec.url in TRUSTED_URLS
@@ -97,9 +100,19 @@ def _install_policy() -> None:
                 "The exact HTTPS media allowlist requires redirects disabled."
             )
 
+    def guarded_file(self: MediaConnector, url_spec: Any, media_io: Any) -> Any:
+        if os.environ.get("SPARK_DS41F_MEDIA_DATA_ONLY") == "1":
+            # ValueError is translated to the API's client-error envelope before
+            # _load_file_url can resolve or open any path.
+            raise ValueError("File media URLs are disabled; send a base64 data URL.")
+        return current_file(self, url_spec, media_io)
+
     guarded._spark_ds41f_policy = _PATCH_MARKER  # type: ignore[attr-defined]
-    guarded._spark_ds41f_original = current  # type: ignore[attr-defined]
+    guarded._spark_ds41f_original = current_url  # type: ignore[attr-defined]
+    guarded_file._spark_ds41f_policy = _PATCH_MARKER  # type: ignore[attr-defined]
+    guarded_file._spark_ds41f_original = current_file  # type: ignore[attr-defined]
     MediaConnector._assert_url_in_allowed_media_domains = guarded
+    MediaConnector._load_file_url = guarded_file
 
 
 _install_policy()

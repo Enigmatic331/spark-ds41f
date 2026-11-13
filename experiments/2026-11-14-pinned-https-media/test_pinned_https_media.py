@@ -149,8 +149,10 @@ def run(connector_path: Path, overlay_path: Path) -> None:
     assert module.TRUSTED_URLS == frozenset((TRUSTED, CARD))
     assert module.TRUSTED_HOSTS == ("raw.githubusercontent.com",)
     patched_method = probe_class._assert_url_in_allowed_media_domains
+    patched_file_method = probe_class._load_file_url
     module._install_policy()
     assert probe_class._assert_url_in_allowed_media_domains is patched_method
+    assert probe_class._load_file_url is patched_file_method
     probe = make_probe(probe_class)
     rejected = [
         TRUSTED.replace("https://", "http://", 1),
@@ -177,12 +179,19 @@ def run(connector_path: Path, overlay_path: Path) -> None:
         assert all(call[1] is False for call in probe.connection.calls)
         assert all(call[2] == 4096 for call in probe.connection.calls)
 
+        sentinel = "file:///nonexistent-spark-ds41f-policy-sentinel.png"
         try:
-            probe.load_from_url("file:///etc/passwd", FakeIO())
-        except RuntimeError as exc:
-            assert "allowed-local-media-path" in str(exc)
+            probe.load_from_url(sentinel, FakeIO())
+        except ValueError as exc:
+            assert "File media URLs are disabled" in str(exc)
         else:
             raise AssertionError("file URL unexpectedly accepted")
+        try:
+            asyncio.run(probe.load_from_url_async(sentinel, FakeIO()))
+        except ValueError as exc:
+            assert "File media URLs are disabled" in str(exc)
+        else:
+            raise AssertionError("async file URL unexpectedly accepted")
 
         probe.allowed_media_domains = []
         rejected_sync(probe, TRUSTED)
@@ -207,6 +216,14 @@ def run(connector_path: Path, overlay_path: Path) -> None:
             pass
         else:
             raise AssertionError("canonical opt-out allowlist behavior changed")
+        try:
+            probe.load_from_url(
+                "file:///nonexistent-spark-ds41f-policy-sentinel.png", FakeIO()
+            )
+        except RuntimeError as exc:
+            assert "allowed-local-media-path" in str(exc)
+        else:
+            raise AssertionError("canonical opt-out file behavior changed")
 
     bad_allowlists = [
         "not-json",

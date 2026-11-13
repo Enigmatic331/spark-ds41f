@@ -35,6 +35,10 @@ The tool call's p95 time to first output rose from **0.40 seconds solo to 6.15 s
 
 At the end of this boot the local-file URL negative returned 500 before accessing the path. That response blocks promotion of the tested media variant. The v2 connector maps disabled file input to a validation error; this branch runs only for local-file media. The intended 16-resident plus one image case did not send any requests on this boot because the wrapper looked in the wrong directory for its invoice fixture. Subsequent release decisions must use an actual protected run of that cell.
 
+### Final media revision
+
+On a fresh 17-slot staging boot using the revised guard, both trusted HTTPS fixtures answered correctly in visible content and stopped normally. Untrusted host, altered query and disabled local file each returned 400. Etherscan passed 16/16, region checks 9/9, and both isolated screenshot replays explicitly returned the annotated column. Every one of the 16 distinct resident streams matched its solo output byte for byte and continued after the six-image request's first token. The image request scored 5/5 with first output in 3.357 seconds and completion in 4.117 seconds. The longest observed resident event gap was 2.845 seconds during prefill and 0.143 seconds during recovery. All 17 requests were uncached.
+
 ## Provenance
 
 The model and tokenizer originate with DeepSeek. The deployed site checkpoint uses Huihui native FP8 output-projection transplants in 13 layers. The engine is Christopher Owen's 1107 recipe and imported vLLM, TileLang, B12X, FlashInfer and NCCL/SparkNet dependencies. The native ARM64 build, Torch vision adaptation, rank integration and recovery controls are site adaptations. The grounding module, new dashboards and assessment are AI-assisted site work. The historical images, prompts and scorer come from the site's existing October 18 suite. Claude reviewed the diagnostic interpretation. These numbers describe private staging, with no upstream contribution or public client cutover implied.

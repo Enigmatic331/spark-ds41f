@@ -1,0 +1,27 @@
+{
+  "fixtures": [
+    {
+      "bytes": 38601,
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "http_status": 200,
+      "name": "shapes.png",
+      "redirects_followed": 0,
+      "repository_fixture_equal": true,
+      "sha256": "5f2eddceb0ca8205e0cbef34c5bd5ea5f317c317e523304b6df3a9635c7e80b5",
+      "tls_version": "TLSv1.3"
+    },
+    {
+      "bytes": 372357,
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "http_status": 200,
+      "name": "card.png",
+      "redirects_followed": 0,
+      "repository_fixture_equal": true,
+      "sha256": "f0638ec4318deb5c373d4fd588f57280a3a5a1d189d5696a88c4c45ad80e0a7d",
+      "tls_version": "TLSv1.3"
+    }
+  ],
+  "host": "raw.githubusercontent.com",
+  "port": 443,
+  "status": "PASS"
+}

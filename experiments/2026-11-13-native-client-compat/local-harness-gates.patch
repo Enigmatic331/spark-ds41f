@@ -1,0 +1,69 @@
+--- a/candidate_qualification.py
++++ b/candidate_qualification.py
+@@ -542,4 +542,16 @@
+ 
+ 
++def resident_assertions(rows, all_started, max_gap):
++    """A wrong answer is a quality failure; do not diagnose its cause here."""
++    return {
++        "resident_output_mismatch": bool(rows) and all(r["sequence_exact"] for r in rows),
++        "resident_not_active": all_started and all(r["active_at_injection"] for r in rows),
++        "resident_no_progress": all(r["made_progress_during_prefill"] or not r["progress_required"] for r in rows),
++        "resident_gap_exceeded_or_unmeasured": all(
++            r["gaps_during_prefill"]["max_s"] is not None and r["gaps_during_prefill"]["max_s"] <= max_gap
++            for r in rows),
++    }
++
++
+ class Runner:
+     def __init__(self, args: argparse.Namespace, key: str | None) -> None:
+@@ -1114,7 +1126,7 @@
+             self.args.resident_case_base
+             if self.args.resident_case_base is not None
+-            else 1000 + level * 100 + (target or 0)
++            else 1000 + level * 100
+         )
+-        resident_prefix = self.args.resident_prefix or f"interference-{label}"
++        resident_prefix = self.args.resident_prefix or f"interference-fixed-n{level}"
+         specs = [
+             self.number_sequence_body(
+@@ -1171,5 +1183,4 @@
+         decoder_rows = []
+         max_gaps = []
+-        all_decoders_ok = True
+         for (_, expected), capture in zip(specs, captures):
+             self.assert_stream(capture, finishes={"stop", "length"})
+@@ -1183,6 +1194,4 @@
+             made_progress = any(injection_started <= t <= prefill_end for t in capture.event_times)
+             progress_required = (prefill_end - injection_started) > 1.0
+-            ok = exact and active_at_injection and (made_progress or not progress_required)
+-            all_decoders_ok = all_decoders_ok and ok
+             row = self.stream_summary(capture)
+             row.update(
+@@ -1198,8 +1207,10 @@
+             decoder_rows.append(row)
+ 
+-        gap_gate = bool(max_gaps) and max(max_gaps) <= self.args.max_decoder_gap_s
+-        passed = all_started_before_injection and all_decoders_ok and gap_gate
++        assertions = resident_assertions(decoder_rows, all_started_before_injection, self.args.max_decoder_gap_s)
++        failures = [code for code, satisfied in assertions.items() if not satisfied]
++        passed = not failures
+         return {
+             "label": label,
++            "failed_assertions": failures,
+             "decoder_concurrency": level,
+             "resident_case_indexes": [case_base + index for index in range(level)],
+@@ -1233,5 +1244,5 @@
+                 self.progress("prefill_cell_complete", label=label, passed=cell["passed"])
+                 if not cell["passed"]:
+-                    raise GateFailure("prefill_interference_gate_failed", label)
++                    raise GateFailure(cell["failed_assertions"][0], label)
+         for level in self.args.image_interference_levels:
+             label = f"six-image-n{level}"
+@@ -1241,5 +1252,5 @@
+             self.progress("prefill_cell_complete", label=label, passed=cell["passed"])
+             if not cell["passed"]:
+-                raise GateFailure("image_interference_gate_failed", label)
++                raise GateFailure(cell["failed_assertions"][0], label)
+ 
+         cells = self.result["phases"][phase]["cells"]

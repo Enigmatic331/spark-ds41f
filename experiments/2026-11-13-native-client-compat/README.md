@@ -77,8 +77,51 @@ cell showed a 4.049 s pause and complete answers.
 
 This is a failed answer-completeness assertion, not proof that the scheduler or
 speculative decoder caused premature termination. Ordinary model early stopping
-is still plausible. The exact resident prompt has not been replayed in isolation
-on this candidate. No generation/scheduler fix is included here.
+is still plausible. The follow-up controls below supersede the original
+uncertainty about whether load was necessary. No generation/scheduler fix is included.
+
+## Controlled replay, November 13
+
+The four resident request bodies match the historical fingerprints exactly.
+The focal request yielded the same 1,948-number prefix, byte for byte, in all
+six Christopher runs. Every peer returned all 2,048 numbers in every wave.
+Every stream completed with HTTP 200, one terminal marker, and normal stop.
+
+| Condition | Repeats | Focal integers (requested 2,048) | Worst resident event gap |
+|---|---:|---:|---:|
+| Christopher, alone | 2 | 1,948 both times | 0.048 s |
+| Christopher, four residents | 2 | 1,948 both times | 0.075 s |
+| Christopher, four plus long prefill | 2 | 1,948 both times | 1.033 s |
+| TensorFold, identical request alone | 2 | 1,548 both times | See receipts |
+
+The new injected prompts used distinct nonces (51,529 and 53,018 actual tokens,
+8,192 cached in each, versus 48,548 and 8,192 in the original). Both needle
+answers passed, and all residents progressed during both prefills. The measured
+gaps are between client SSE events, not kernel scheduling measurements.
+TensorFold also returned an exact prefix with clean termination, but a different
+length. This fails the task oracle on both engines. It rules out competing
+decoders or long prefill as a necessary cause for this Christopher result.
+Neither model-chosen EOS nor a backend-specific decoding cause is proven; no
+speculation-off or terminal-logit comparison was made.
+
+The original test changed the resident prompts along with the prefill size and
+used one failure name for output mismatch, starvation, and excessive gaps.
+The adapted local harness now holds resident requests fixed across prefill sizes
+at each concurrency and records each failing assertion separately. Historical
+records remain unchanged: reclassifying the old failure yields only
+`resident_output_mismatch`. Reports still fail task quality for wrong answers.
+The opt-in `local-harness-gates.patch` targets the external site qualification
+harness, **not** the vLLM runtime. The new AI-assisted replay/comparison tools
+and sanitized receipts are beside this file. Numeric bodies are retained locally.
+
+The direct reasoning/tool/vision suite passed on the replay boot. Actual
+DSH/Sembang routes, image interference, long-running soak, and production
+qualification remain open. The controller restored the known-good service.
+During this window the original baseline stop launcher was found to remove its
+containers, defeating the rank-local restart fallback. The new opt-in baseline
+control helper verifies all four container IDs, image, and auto-remove flags;
+the corrected cutover confirmed all original IDs survived in stopped state.
+The full multi-node deadline expiry was not deliberately exercised.
 
 ## Fix and retest queue
 

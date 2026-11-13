@@ -1,0 +1,372 @@
+diff --git a/tests/entrypoints/openai/chat_completion/test_deepseek_v41_continue_final_parse.py b/tests/entrypoints/openai/chat_completion/test_deepseek_v41_continue_final_parse.py
+new file mode 100644
+index 000000000..e3e9fe20d
+--- /dev/null
++++ b/tests/entrypoints/openai/chat_completion/test_deepseek_v41_continue_final_parse.py
+@@ -0,0 +1,235 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from typing import Any
++
++from tests.parser.engine.replay_harness import MockTokenizer
++from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
++from vllm.entrypoints.openai.chat_completion.serving import (
++    _continued_final_reasoning_parse_prefix,
++    _parse_nonstream_chat_output,
++)
++from vllm.parser.parser_manager import ParserManager
++
++THINK_START = 50
++THINK_END = 51
++OUTPUT_IDS = [420, 446, 1]
++OUTPUT_TEXT = "D E"
++PROMPT_IDS = [7, THINK_START, 410, THINK_END, 419]
++TOOL_TEXT = (
++    '<｜DSML｜ calls><｜DSML｜ invoke name="ping">'
++    '<｜DSML｜ parameter name="x" string="false">1</｜DSML｜ parameter>'
++    "</｜DSML｜ invoke></｜DSML｜ calls>"
++)
++TOOLS = [
++    {
++        "type": "function",
++        "function": {
++            "name": "ping",
++            "parameters": {
++                "type": "object",
++                "properties": {"x": {"type": "integer"}},
++            },
++        },
++    }
++]
++
++
++def _tokenizer() -> MockTokenizer:
++    return MockTokenizer(
++        {"<think>": THINK_START, "</think>": THINK_END},
++        [
++            (THINK_START, "<think>"),
++            (THINK_END, "</think>"),
++            (410, "closed reasoning"),
++            (419, "C"),
++            (420, "D"),
++            (446, " E"),
++            (421, TOOL_TEXT),
++            (1, ""),
++        ],
++    )
++
++
++def _request(
++    messages: list[dict[str, Any]],
++    *,
++    continue_final_message: bool,
++    reasoning_effort: str = "low",
++    tools: list[dict[str, Any]] | None = None,
++) -> ChatCompletionRequest:
++    return ChatCompletionRequest.model_validate(
++        {
++            "model": "test-model",
++            "messages": messages,
++            "add_generation_prompt": not continue_final_message,
++            "continue_final_message": continue_final_message,
++            "chat_template_kwargs": {"reasoning_effort": reasoning_effort},
++            "tools": tools,
++        }
++    )
++
++
++def _parser(
++    *,
++    reasoning_effort: str = "low",
++    tools: list[dict[str, Any]] | None = None,
++    parser_name: str = "deepseek_v41",
++):
++    parser_cls = ParserManager.get_parser(
++        tool_parser_name=parser_name if tools else None,
++        reasoning_parser_name=parser_name,
++        enable_auto_tools=bool(tools),
++    )
++    assert parser_cls is not None
++    return parser_cls(
++        _tokenizer(),
++        tools,
++        chat_template_kwargs={"reasoning_effort": reasoning_effort},
++    )
++
++
++def test_content_only_continuation_nonstream_matches_streaming():
++    # DeepSeek V4.1 emits THINK_END before nonempty assistant content even when
++    # the request did not carry a dedicated reasoning field.
++    messages = [{"role": "assistant", "content": "C"}]
++    request = _request(messages, continue_final_message=True)
++
++    reasoning, content, tool_calls, reasoning_tokens = _parse_nonstream_chat_output(
++        _parser(),
++        request,
++        messages,
++        PROMPT_IDS,
++        OUTPUT_TEXT,
++        OUTPUT_IDS,
++        enable_auto_tools=False,
++    )
++    stream_delta = _parser().parse_delta(
++        OUTPUT_TEXT,
++        OUTPUT_IDS,
++        request,
++        prompt_token_ids=PROMPT_IDS,
++        finished=True,
++    )
++
++    assert reasoning is None
++    assert content == OUTPUT_TEXT
++    assert tool_calls == []
++    assert reasoning_tokens == 0
++    assert stream_delta is not None
++    assert stream_delta.reasoning is None
++    assert stream_delta.content == OUTPUT_TEXT
++
++
++def test_open_reasoning_continuation_remains_reasoning():
++    messages = [
++        {"role": "assistant", "reasoning": "still open", "content": ""}
++    ]
++    request = _request(messages, continue_final_message=True)
++    parser = _parser()
++
++    assert (
++        _continued_final_reasoning_parse_prefix(
++            request, messages, parser, [7, THINK_START, 410]
++        )
++        is None
++    )
++    reasoning, content, _, _ = _parse_nonstream_chat_output(
++        parser,
++        request,
++        messages,
++        [7, THINK_START, 410],
++        OUTPUT_TEXT,
++        OUTPUT_IDS,
++        enable_auto_tools=False,
++    )
++    assert reasoning == OUTPUT_TEXT
++    assert content is None
++
++
++def test_normal_turn_and_reasoning_disabled_are_unchanged():
++    normal_messages = [{"role": "user", "content": "continue"}]
++    normal_request = _request(normal_messages, continue_final_message=False)
++    normal_reasoning, normal_content, _, _ = _parse_nonstream_chat_output(
++        _parser(),
++        normal_request,
++        normal_messages,
++        [7],
++        OUTPUT_TEXT,
++        OUTPUT_IDS,
++        enable_auto_tools=False,
++    )
++    assert normal_reasoning == OUTPUT_TEXT
++    assert normal_content is None
++
++    closed_messages = [
++        {"role": "assistant", "reasoning": "ignored", "content": "C"}
++    ]
++    disabled_request = _request(
++        closed_messages,
++        continue_final_message=True,
++        reasoning_effort="none",
++    )
++    disabled_reasoning, disabled_content, _, disabled_tokens = (
++        _parse_nonstream_chat_output(
++            _parser(reasoning_effort="none"),
++            disabled_request,
++            closed_messages,
++            PROMPT_IDS,
++            OUTPUT_TEXT,
++            OUTPUT_IDS,
++            enable_auto_tools=False,
++        )
++    )
++    assert disabled_reasoning is None
++    assert disabled_content == OUTPUT_TEXT
++    assert disabled_tokens == 0
++
++
++def test_user_content_sentinel_cannot_activate_prefix():
++    # A literal spelling remains ordinary text and therefore supplies no
++    # configured THINK_END token. A later THINK_START also reopens reasoning.
++    messages = [{"role": "assistant", "content": "literal </think> text"}]
++    request = _request(messages, continue_final_message=True)
++    parser = _parser()
++
++    assert _continued_final_reasoning_parse_prefix(
++        request, messages, parser, [7, 600, 601]
++    ) is None
++    assert _continued_final_reasoning_parse_prefix(
++        request, messages, parser, [7, THINK_END, 600, THINK_START, 601]
++    ) is None
++
++
++def test_other_reasoning_parser_with_same_marker_is_unchanged():
++    messages = [{"role": "assistant", "content": "C"}]
++    request = _request(messages, continue_final_message=True)
++
++    assert _continued_final_reasoning_parse_prefix(
++        request,
++        messages,
++        _parser(parser_name="deepseek_v4"),
++        PROMPT_IDS,
++    ) is None
++
++
++def test_closed_reasoning_continuation_still_parses_tools():
++    messages = [{"role": "assistant", "content": "C"}]
++    request = _request(messages, continue_final_message=True, tools=TOOLS)
++    reasoning, content, tool_calls, reasoning_tokens = _parse_nonstream_chat_output(
++        _parser(tools=TOOLS),
++        request,
++        messages,
++        PROMPT_IDS,
++        TOOL_TEXT,
++        [421],
++        enable_auto_tools=True,
++    )
++
++    assert reasoning is None
++    assert content is None
++    assert tool_calls is not None
++    assert [(call.name, call.arguments) for call in tool_calls] == [
++        ("ping", '{"x": 1}')
++    ]
++    assert reasoning_tokens == 0
+diff --git a/vllm/entrypoints/openai/chat_completion/serving.py b/vllm/entrypoints/openai/chat_completion/serving.py
+index 06e7315c2..b70696eda 100644
+--- a/vllm/entrypoints/openai/chat_completion/serving.py
++++ b/vllm/entrypoints/openai/chat_completion/serving.py
+@@ -117,2 +117,103 @@ def _make_completion_tokens_details(
+ 
++def _continued_final_reasoning_parse_prefix(
++    request: ChatCompletionRequest,
++    conversation: list[ConversationMessage],
++    parser: Parser,
++    prompt_token_ids: list[int] | None,
++) -> tuple[str, tuple[int, ...]] | None:
++    """Return a parser-only reasoning closer for a closed assistant prefix.
++
++    A non-streaming parser normally sees only generated tokens, so an output
++    continuing an assistant message whose reasoning closed in the prompt would
++    otherwise be parsed from the reasoner's initial REASONING state. Streaming
++    avoids this by inspecting ``prompt_token_ids`` before its first delta.
++
++    Keep this narrowly tied to the DeepSeek V4.1 parser and the matching
++    chat-template case: an assistant ``continue_final_message`` with content or
++    tool calls. The parser's actual end-token ID must occur in the rendered
++    prompt. We deliberately do not search message text, so a literal
++    reasoning-end spelling supplied as content cannot activate this path.
++    """
++    if (
++        not request.continue_final_message
++        or not conversation
++        or not prompt_token_ids
++    ):
++        return None
++
++    final_message = conversation[-1]
++    if final_message.get("role") != "assistant":
++        return None
++    if not final_message.get("content") and not final_message.get("tool_calls"):
++        # The template leaves a reasoning-only assistant prefix open.
++        return None
++
++    reasoner = parser.reasoning_parser
++    if reasoner is None:
++        return None
++
++    # The same marker protocol is used by several model families. Limit this
++    # compatibility shim to the active DeepSeek V4.1 adapter and its engine.
++    from vllm.parser.deepseek_v41 import DeepSeekV41Parser
++    from vllm.parser.engine.registered_adapters import (
++        DeepSeekV41ParserReasoningAdapter,
++    )
++
++    if (
++        not isinstance(reasoner, DeepSeekV41ParserReasoningAdapter)
++        or reasoner._parser_engine_cls is not DeepSeekV41Parser
++        or not parser.is_reasoning_end(prompt_token_ids)
++    ):
++        return None
++    end_text = reasoner.reasoning_end_str
++    end_token_ids = reasoner.reasoning_end_token_ids
++    if not end_text or not end_token_ids:
++        return None
++
++    # Reuse the exact end token emitted by the template. In particular, do not
++    # tokenize a sentinel spelling from request-controlled text.
++    end_token_id = next(
++        (
++            token_id
++            for token_id in reversed(prompt_token_ids)
++            if token_id in end_token_ids
++        ),
++        None,
++    )
++    if end_token_id is None:
++        return None
++    return end_text, (end_token_id,)
++
++
++def _parse_nonstream_chat_output(
++    parser: Parser,
++    request: ChatCompletionRequest,
++    conversation: list[ConversationMessage],
++    prompt_token_ids: list[int] | None,
++    model_output: str,
++    model_output_token_ids: GenericSequence[int],
++    *,
++    enable_auto_tools: bool,
++) -> tuple[str | None, str | None, list[FunctionCall] | None, int]:
++    """Parse one complete output with the same prompt state as streaming."""
++    parse_text = model_output
++    parse_token_ids: GenericSequence[int] = model_output_token_ids
++    prefix = _continued_final_reasoning_parse_prefix(
++        request, conversation, parser, prompt_token_ids
++    )
++    if prefix is not None:
++        prefix_text, prefix_token_ids = prefix
++        parse_text = prefix_text + parse_text
++        parse_token_ids = (*prefix_token_ids, *parse_token_ids)
++
++    reasoning, content, tool_calls = parser.parse(
++        parse_text,
++        request,
++        enable_auto_tools=enable_auto_tools,
++        model_output_token_ids=parse_token_ids,
++    )
++    reasoning_tokens = parser.count_reasoning_tokens(parse_token_ids)
++    return reasoning, content, tool_calls, reasoning_tokens
++
++
+ class OpenAIServingChat(GenerateBaseServing):
+@@ -969,7 +1070,12 @@ class OpenAIServingChat(GenerateBaseServing):
+             if parser is not None:
+-                reasoning, content, tool_calls = parser.parse(
+-                    output.text,
+-                    request,
+-                    enable_auto_tools=self.enable_auto_tools,
+-                    model_output_token_ids=token_ids,
++                reasoning, content, tool_calls, reasoning_tokens = (
++                    _parse_nonstream_chat_output(
++                        parser,
++                        request,
++                        conversation,
++                        final_res.prompt_token_ids,
++                        output.text,
++                        token_ids,
++                        enable_auto_tools=self.enable_auto_tools,
++                    )
+                 )
+@@ -978,3 +1084,3 @@ class OpenAIServingChat(GenerateBaseServing):
+                     reasoning = None
+-                total_reasoning_tokens += parser.count_reasoning_tokens(token_ids)
++                total_reasoning_tokens += reasoning_tokens
+                 if suppress_metadata:

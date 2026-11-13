@@ -1,0 +1,81 @@
+diff --git a/experiments/2026-11-14-grounded-mm-policy/CONTROL-ARTIFACTS.sha256 b/experiments/2026-11-14-grounded-mm-policy/CONTROL-ARTIFACTS.sha256
+index 06e0a9d..25af2d5 100644
+--- a/experiments/2026-11-14-grounded-mm-policy/CONTROL-ARTIFACTS.sha256
++++ b/experiments/2026-11-14-grounded-mm-policy/CONTROL-ARTIFACTS.sha256
+@@ -1,3 +1,3 @@
+-6a373dd7c4a1c10f6fdca8c4e8d8e1d544f91b91097d3d7dca21f7801d795ac5  spark_grounded_mm_policy.py
+-ae604a20e2f2f18e17a3f805558aabc83436bf63dafe46f86f8edaad56c4a545  test_grounded_mm_policy.py
+-1294460dad6b1d88cb5623ef2eda705977d794f1495f7583a43c335efbb0e562  README.md
++90c776a5807e43707613f5a2646f380344e3c880acc212ea4e3ee20060e6de3b  spark_grounded_mm_policy.py
++9f11fe0e9b3debecf44430a8a5a81c3a5579d4a70a2682fc622ee4e01b31c588  test_grounded_mm_policy.py
++1b7aac8304650bb30676457ea6a223e47d530db831d2704098a8472a27050e97  README.md
+diff --git a/experiments/2026-11-14-grounded-mm-policy/README.md b/experiments/2026-11-14-grounded-mm-policy/README.md
+index 2cbbcc9..ff68cbd 100644
+--- a/experiments/2026-11-14-grounded-mm-policy/README.md
++++ b/experiments/2026-11-14-grounded-mm-policy/README.md
+@@ -54,10 +54,12 @@ response parsing, sampling parameters, or decoding.
+ ## Fail-closed exclusions
+ 
+ The policy is not staged for text-only or history-only images, continuation
+-prefills, explicit non-generation templates, response formats/structured
+-outputs, decode-side reused prompt IDs, cached UUIDs, explicit non-default image
++prefills, explicit non-generation templates, constrained response formats or
++structured outputs, decode-side reused prompt IDs, cached UUIDs, explicit non-default image
+ detail, embeds/PIL objects, `input_image` aliases, audio/video, prompt embeds,
+ unknown modalities, mixed non-image modalities, or a final non-user turn.
++Omitting the response format or supplying the plain-text type produces the same
++policy and model input on an eligible turn.
+ There is deliberately no lexical transcription detector. Exact transcription
+ and other narrow caller instructions remain later in the prompt, and the policy
+ itself requires the caller's scope/format and forbids unrequested details.
+diff --git a/experiments/2026-11-14-grounded-mm-policy/spark_grounded_mm_policy.py b/experiments/2026-11-14-grounded-mm-policy/spark_grounded_mm_policy.py
+index 4f18ea2..b7256c4 100644
+--- a/experiments/2026-11-14-grounded-mm-policy/spark_grounded_mm_policy.py
++++ b/experiments/2026-11-14-grounded-mm-policy/spark_grounded_mm_policy.py
+@@ -97,8 +97,14 @@ def _should_stage_policy(request: Any, messages: Sequence[Any]) -> bool:
+         return False
+     if getattr(request, "continue_final_message", False):
+         return False
+-    if getattr(request, "response_format", None) is not None:
+-        return False
++    response_format = getattr(request, "response_format", None)
++    if response_format is not None:
++        if isinstance(response_format, Mapping):
++            format_type = response_format.get("type")
++        else:
++            format_type = getattr(response_format, "type", None)
++        if format_type != "text":
++            return False
+     if getattr(request, "structured_outputs", None) is not None:
+         return False
+     if _has_reused_prompt_ids(request) or not messages:
+diff --git a/experiments/2026-11-14-grounded-mm-policy/test_grounded_mm_policy.py b/experiments/2026-11-14-grounded-mm-policy/test_grounded_mm_policy.py
+index 12e442c..f20e220 100644
+--- a/experiments/2026-11-14-grounded-mm-policy/test_grounded_mm_policy.py
++++ b/experiments/2026-11-14-grounded-mm-policy/test_grounded_mm_policy.py
+@@ -122,6 +122,25 @@ class GroundedPolicyTests(unittest.TestCase):
+         staged = policy.stage_grounded_messages(request(), messages)
+         self.assertIs(policy.stage_grounded_messages(request(), staged), staged)
+ 
++    def test_explicit_text_renders_identically_to_default(self):
++        messages = image_messages()
++        default = policy.stage_grounded_messages(request(), messages)
++        for fmt in ({"type": "text"}, SimpleNamespace(type="text")):
++            with self.subTest(fmt=fmt):
++                req = request(response_format=fmt)
++                self.assertEqual(policy.stage_grounded_messages(req, messages), default)
++                self.assertIs(req.response_format, fmt)
++                req.structured_outputs = {"json": {}}
++                self.assertIs(policy.stage_grounded_messages(req, messages), messages)
++
++    def test_constrained_and_unknown_formats_remain_excluded(self):
++        messages = image_messages()
++        for fmt in ({"type": "json_object"}, SimpleNamespace(type="json_schema"),
++                    SimpleNamespace(type="structural_tag"), {}, {"type": "unknown"}):
++            with self.subTest(fmt=fmt):
++                req = request(response_format=fmt)
++                self.assertIs(policy.stage_grounded_messages(req, messages), messages)
++
+     def test_fail_closed_matrix(self):
+         base = image_messages()
+         cases = []

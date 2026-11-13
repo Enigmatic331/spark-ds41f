@@ -1,0 +1,112 @@
+--- a/candidate_qualification.py
++++ b/candidate_qualification.py
+@@ -238,10 +238,12 @@
+     content: str = ""
+     reasoning: str = ""
+     finish_reason: str | None = None
++    stop_reason_safe: int | str | None = None
+     usage: dict[str, Any] = dataclasses.field(default_factory=dict)
+     models: set[str] = dataclasses.field(default_factory=set)
+     response_ids: set[str] = dataclasses.field(default_factory=set)
+     event_times: list[float] = dataclasses.field(default_factory=list)
++    event_digit_counts: list[int] = dataclasses.field(default_factory=list)
+     tool_calls: dict[int, dict[str, str]] = dataclasses.field(default_factory=dict)
+     error: dict[str, Any] | None = None
+     server_timing: dict[str, float] = dataclasses.field(default_factory=dict)
+@@ -275,6 +277,7 @@
+             "done_count": self.done_count,
+             "keepalive_count": self.keepalive_count,
+             "finish_reason": self.finish_reason,
++            "stop_reason_safe": self.stop_reason_safe,
+             "prompt_tokens": prompt,
+             "cached_tokens": cached,
+             "completion_tokens": completion,
+@@ -432,6 +435,12 @@
+                         capture.response_ids.add(event["id"])
+                     if isinstance(event.get("usage"), dict):
+                         capture.usage = event["usage"]
++                    metrics = event.get("metrics")
++                    if isinstance(metrics, dict):
++                        for key in ("queue_time_ms", "time_to_first_token_ms", "generation_time_ms"):
++                            value = metrics.get(key)
++                            if type(value) in (int, float) and value >= 0:
++                                capture.server_timing[f"vllm.{key}"] = float(value)
+                     for key in ("ttft_s", "total_s", "queue_s", "prefill_s", "decode_s"):
+                         if isinstance(event.get(key), (int, float)):
+                             capture.server_timing[key] = float(event[key])
+@@ -445,6 +454,11 @@
+                             continue
+                         if choice.get("finish_reason") is not None:
+                             capture.finish_reason = str(choice["finish_reason"])
++                            stop_value = choice.get("stop_reason")
++                            if type(stop_value) is int or stop_value == "repetition_detected":
++                                capture.stop_reason_safe = stop_value
++                            elif isinstance(stop_value, str):
++                                capture.stop_reason_safe = "sha256:" + sha256_text(stop_value)
+                         delta = choice.get("delta") or {}
+                         if not isinstance(delta, dict):
+                             continue
+@@ -474,6 +488,9 @@
+                         if content or reasoning or tool_event:
+                             now = time.monotonic()
+                             capture.event_times.append(now)
++                            capture.event_digit_counts.append(
++                                sum("0" <= ch <= "9" for ch in content) if isinstance(content, str) else 0
++                            )
+                             if capture.first_output is None:
+                                 capture.first_output = now
+                                 if first_output_event is not None:
+@@ -1169,7 +1186,11 @@
+             )
+             captures = [future.result(timeout=self.args.timeout + 60) for future in futures]
+ 
+-        self.assert_stream(injected, finishes={"stop"})
++        try:
++            self.assert_stream(injected, finishes={"stop"})
++        except GateFailure as exc:
++            exc.injected_summary = self.stream_summary(injected)
++            raise
+         if target is None:
+             injected_checks = score_etherscan(injected.content, images=6, pairs=3)
+             injected_ok = all(injected_checks.values())
+@@ -1177,7 +1198,9 @@
+             injected_checks = {"needle_exact": injected.content.strip() == expected_needle}
+             injected_ok = all(injected_checks.values())
+         if not injected_ok:
+-            raise GateFailure("interference_injected_oracle_failed", injection_case)
++            failure = GateFailure("interference_injected_oracle_failed", injection_case)
++            failure.injected_summary = dict(self.stream_summary(injected), checks=injected_checks)
++            raise failure
+ 
+         prefill_end = injected.first_output or injected.finished
+         decoder_rows = []
+@@ -1194,10 +1217,29 @@
+             made_progress = any(injection_started <= t <= prefill_end for t in capture.event_times)
+             progress_required = (prefill_end - injection_started) > 1.0
+             row = self.stream_summary(capture)
++            # A stream event can contain multiple speculative tokens. These
++            # synthetic five-digit integers let us measure visible payload rate
++            # without assuming one frame per token or retokenizing partial words.
++            def digit_rate(start, end):
++                duration = end - start
++                count = sum(n for t, n in zip(capture.event_times, capture.event_digit_counts)
++                            if start <= t < end)
++                return {"seconds": max(0.0, duration), "digits": count,
++                        "digits_per_second": count / duration if duration > 0 else None}
++            before = capture.first_output or capture.started
++            after = min(capture.finished, prefill_end + 10.0)
++            row["visible_digit_rates"] = {
++                "before": digit_rate(before, injection_started),
++                "during": digit_rate(injection_started, prefill_end),
++                "recovery": digit_rate(prefill_end, after)}
+             row.update(
+                 {
+                     "sequence_exact": exact,
+                     "active_at_injection": active_at_injection,
++                    "emitted_after_injected_first_output": any(t > prefill_end for t in capture.event_times),
++                    "last_output_relative_to_injected_first_s": (
++                        capture.event_times[-1] - prefill_end if capture.event_times else None
++                    ),
+                     "made_progress_during_prefill": made_progress,
+                     "progress_required": progress_required,
+                     "gaps_during_prefill": during,

@@ -91,3 +91,37 @@ client. Remaining steps are live health compatibility, diagnose/complete the
 fixed-input load matrix, a 30–60 minute soak, authenticated app checks, and
 final same-endpoint restart/rollback verification. There is no go-live ETA
 until the client paths are available and these gates are green.
+
+## Fixed-input retest and admission limit, November 13
+
+The opt-in health adapter ran on four native ranks. Sixteen health reads
+covered idle, a peak reset and live generation. Both identical polling/control
+streams were exact. The maximum HTTP health latency was 41 ms in this trial.
+The public memory fields represent the head worker's PyTorch CUDA allocator.
+The five-stream natural EOS, mixed six-image tools/SQL, post-disconnect
+recovery, and 32K/128K/256K retrieval checks also passed on this boot.
+
+All 16 distinct 640-integer fixtures passed in isolation; the previous
+unspecified finish-reason failure did not reproduce. Four and eight resident
+streams passed all four text injections and the six-image injection. Each
+resident's answer matched its solo SHA-256. The largest observed SSE gaps
+were 1.18/1.31 seconds with text and 2.03/2.05 seconds with six images.
+The old character heuristic produced 6.5K–200K actual text inputs. Use
+the request's measured input count for each cell.
+
+At a cap of 16, a 6,514-token injection submitted behind 16 active residents
+first produced output after 36.09 seconds. All 16 decoders answered exactly;
+only 15 were still emitting after the new request's first token. The source
+checks the running limit before admission. The first 17-slot trial retained
+the 8,096-token prefill threshold and failed during engine initialization.
+The scheduler reported that 113 decode rows plus 8,096 exceeds its 8,192-row
+step budget. The next staging configuration reserves 128 rows for decode
+by using an 8,064-token threshold, with the same 10.5 GiB KV allocation.
+Enable `--enable-per-request-metrics` on this staging test to capture queue
+time and first-token latency after scheduling separately.
+
+The model's separate 2,048-integer test still fails on both engines.
+The baseline's 1,548 integers are exactly the first 1,548 of the candidate's
+1,948. Claude reviewed the interpretation; local code and actual receipts
+establish the observed slot limit and output counts. The application-facing
+release decision and authenticated DSH/Sembang acceptance remain open.

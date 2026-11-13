@@ -134,16 +134,17 @@ def probe(a):
         return dict(status=rec.status,error=rec.error,passed=rec.status in (400,422))
     tests=[]
     if a.render: tests.append(("render_defaults",defaults))
-    for i in range(1,a.repeats+1):
+    for i in range(a.case_offset+1,a.case_offset+a.repeats+1):
         tests.extend([(f"sql-{i}",lambda i=i:sql(i)),(f"contract-{i}",lambda i=i:contract(i))])
     tests.append(("remote_media_refusal",remote_refusal))
     if a.multimodal:
         def mixed():
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                jobs=[pool.submit(vision,i) for i in (41,42)]+[pool.submit(sql,43),pool.submit(contract,44)]
+                jobs=[pool.submit(vision,a.case_offset+i) for i in (41,42)]
+                jobs.extend((pool.submit(sql,a.case_offset+43),pool.submit(contract,a.case_offset+44)))
                 rows=[j.result() for j in jobs]
                 return dict(rows=rows,passed=all(r["passed"] for r in rows))
-        tests.extend([("simultaneous_images_text_tools",mixed),("long_text_plus_images",lambda:vision(51,True))])
+        tests.extend([("simultaneous_images_text_tools",mixed),("long_text_plus_images",lambda:vision(a.case_offset+51,True))])
     out={"schema":1,"started_utc":q.utc_now(),"status":"RUNNING","cases":{}}
     with a.output.open("x") as f: json.dump(out,f)
     def save():
@@ -169,6 +170,7 @@ if __name__=="__main__":
     p.add_argument("--model",required=True);p.add_argument("--output",type=Path,required=True)
     p.add_argument("--etherscan-dir",type=Path);p.add_argument("--multimodal",action="store_true")
     p.add_argument("--render",action="store_true");p.add_argument("--repeats",type=int,default=3)
+    p.add_argument("--case-offset",type=int,default=0)
     a=p.parse_args()
     if a.multimodal and not a.etherscan_dir: p.error("multimodal tests require the fixture directory")
     if not 1<=a.repeats<=10: p.error("invalid repeat count")

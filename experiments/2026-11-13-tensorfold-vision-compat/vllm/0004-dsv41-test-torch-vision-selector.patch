@@ -1,0 +1,154 @@
+Subject: [PATCH] DeepSeek V4.1: test the Torch vision selector and image runner
+
+Base: patches 0001 through 0003 in this local experiment, over the imported
+Christopher Owen 1107 stack and Local Inference Lab vLLM
+19f2c20ed4d64ae22bd009ceacadd85e2a81e354.
+
+Scope: add CPU unit coverage for the default TileLang selector, the explicit
+Torch selector, invalid backend rejection, data-parallel factory enforcement,
+the TensorFold compatibility constructor flag, and per-image patch slicing.
+This patch changes tests only; it does not alter the serving implementation.
+
+Provenance: the tests are newly implemented local AI-assisted validation for
+the adapted selector/runner in patch 0002.  They contain no TensorFold code,
+model data, deployment path, host address, or diagnostic span override.
+
+Local experiment only; not represented as upstream-ready or PR-ready.
+---
+ tests/models/test_deepseek_v4_vision.py | 119 ++++++++++++++++++++++++++++++++
+ 1 file changed, 118 insertions(+), 1 deletion(-)
+
+diff --git a/tests/models/test_deepseek_v4_vision.py b/tests/models/test_deepseek_v4_vision.py
+--- a/tests/models/test_deepseek_v4_vision.py
++++ b/tests/models/test_deepseek_v4_vision.py
+@@ -1,8 +1,9 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+ from contextlib import contextmanager
+-from types import SimpleNamespace
++import sys
++from types import ModuleType, SimpleNamespace
+ from unittest.mock import Mock
+ 
+ import pytest
+@@ -376,3 +377,119 @@ def test_tensorfold_compat_rope_is_opt_in(monkeypatch, tensorfold_compat):
+     expected_device = patches.device if tensorfold_compat else missing
+     assert seen["call"] == (2, 3, 4, 10_000.0, expected_device)
+     assert out is patches
++
++
++def test_dsv41_vision_backend_selector_defaults_to_tilelang(monkeypatch):
++    from vllm.models.deepseek_v4_1.nvidia import vl_model as nvidia_vl
++
++    module_name = f"{nvidia_vl.__package__}.tilelang_vision"
++    fake_tilelang = ModuleType(module_name)
++    expected = tuple(object() for _ in range(4))
++    for name, value in zip(
++        (
++            "DeepseekV4ViT",
++            "DeepseekV4Aligner",
++            "run_dp_sharded_vision_tower",
++            "encode_images",
++        ),
++        expected,
++        strict=True,
++    ):
++        setattr(fake_tilelang, name, value)
++    monkeypatch.setitem(sys.modules, module_name, fake_tilelang)
++    monkeypatch.delenv("VLLM_DSV41_VISION_BACKEND", raising=False)
++
++    assert nvidia_vl._vision_tower() == expected
++
++
++def test_dsv41_vision_backend_selector_selects_torch(monkeypatch):
++    from vllm.models.deepseek_v4.common import vision
++    from vllm.models.deepseek_v4_1.nvidia import vl_model as nvidia_vl
++
++    monkeypatch.setenv("VLLM_DSV41_VISION_BACKEND", "torch")
++
++    assert nvidia_vl._vision_tower() == (
++        nvidia_vl._make_torch_vit,
++        nvidia_vl._make_torch_aligner,
++        vision.run_dp_sharded_vision_tower,
++        nvidia_vl._encode_images_torch,
++    )
++
++
++def test_dsv41_vision_backend_selector_rejects_unknown_value(monkeypatch):
++    from vllm.models.deepseek_v4_1.nvidia import vl_model as nvidia_vl
++
++    monkeypatch.setenv("VLLM_DSV41_VISION_BACKEND", "unknown")
++
++    with pytest.raises(ValueError, match="must be 'tilelang' or 'torch'"):
++        nvidia_vl._vision_tower()
++
++
++@pytest.mark.parametrize(
++    ("factory_name", "class_name", "expected_kwargs"),
++    [
++        (
++            "_make_torch_vit",
++            "DeepseekV4ViT",
++            {"tensorfold_compat_attention": True},
++        ),
++        ("_make_torch_aligner", "DeepseekV4Aligner", {}),
++    ],
++)
++def test_dsv41_torch_factories_require_data_parallel(
++    monkeypatch, factory_name, class_name, expected_kwargs
++):
++    from vllm.models.deepseek_v4.common import vision
++    from vllm.models.deepseek_v4_1.nvidia import vl_model as nvidia_vl
++
++    calls = []
++    result = object()
++
++    def constructor(config, **kwargs):
++        calls.append((config, kwargs))
++        return result
++
++    monkeypatch.setattr(vision, class_name, constructor)
++    factory = getattr(nvidia_vl, factory_name)
++    config = object()
++
++    with pytest.raises(ValueError, match="requires data parallel mode"):
++        factory(config, use_data_parallel=False)
++    assert factory(config, use_data_parallel=True) is result
++    assert calls == [(config, expected_kwargs)]
++
++
++def test_dsv41_torch_image_runner_slices_each_image_once():
++    from vllm.models.deepseek_v4_1.nvidia import vl_model as nvidia_vl
++
++    tower_calls = []
++    aligner_calls = []
++
++    def tower(rows, height, width):
++        tower_calls.append((rows.clone(), height, width))
++        return rows + 1
++
++    def aligner(rows, height, width):
++        aligner_calls.append((rows.clone(), height, width))
++        return rows.sum(dim=0)
++
++    patches = torch.arange(12, dtype=torch.float32).reshape(6, 2)
++    result = nvidia_vl._encode_images_torch(
++        tower,
++        aligner,
++        patches,
++        [(1, 2), (2, 2)],
++    )
++
++    assert [(height, width) for _, height, width in tower_calls] == [
++        (1, 2),
++        (2, 2),
++    ]
++    torch.testing.assert_close(tower_calls[0][0], patches[:2])
++    torch.testing.assert_close(tower_calls[1][0], patches[2:])
++    assert [(height, width) for _, height, width in aligner_calls] == [
++        (1, 2),
++        (2, 2),
++    ]
++    torch.testing.assert_close(result[0], (patches[:2] + 1).sum(dim=0))
++    torch.testing.assert_close(result[1], (patches[2:] + 1).sum(dim=0))

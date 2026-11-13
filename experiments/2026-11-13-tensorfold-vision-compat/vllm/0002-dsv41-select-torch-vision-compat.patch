@@ -1,0 +1,114 @@
+Subject: [PATCH] DeepSeek V4.1: select the opt-in Torch vision compatibility lane
+
+Base: the imported Christopher Owen 1107 stack over Local Inference Lab vLLM
+19f2c20ed4d64ae22bd009ceacadd85e2a81e354, after the repository's recorded
+patch series and after patch 0001 in this experiment.
+
+Scope: add a local environment-controlled selector and a reference-style
+per-image runner adapted from vLLM's existing non-packed DeepSeek image loop.
+The default remains TileLang. The Torch lane requires data-parallel vision and
+explicitly enables the arithmetic option introduced by 0001.
+
+Provenance: the selector and factory adapters are newly implemented local
+AI-assisted integration code.  The per-image runner is locally adapted and
+refactored from upstream vLLM's existing non-packed DeepSeek image loop.  No
+TensorFold source or binary is copied. The selector was already part of the
+native compatibility deployment; this patch records it reproducibly and adds
+the explicit tensorfold_compat_attention=True activation used by the audited
+service.
+
+Validation: original selector SHA256 ecf43fa91334ad768ee5c15386f939532cbfd734c8182a1494c8eb472fe640d0;
+audited overlay SHA256 f4c899fde8117caaab1b18fc506389e0e504ce6cdb6c7ee19cad3100ba08c4d0.
+Local experiment only; not represented as upstream-ready.
+---
+ vllm/models/deepseek_v4_1/nvidia/vl_model.py | 71 ++++++++++++++++++++++++++-
+ 1 file changed, 69 insertions(+), 2 deletions(-)
+
+--- a/vllm/models/deepseek_v4_1/nvidia/vl_model.py
++++ b/vllm/models/deepseek_v4_1/nvidia/vl_model.py
+@@ -3,6 +3,7 @@
+ """SM120 DeepSeek V4.1 with native vision and streaming checkpoint loading."""
+ 
+ from collections.abc import Iterable
++import os
+ 
+ import torch
+ from torch import nn
+@@ -44,9 +45,75 @@
+ )
+ 
+ 
++def _encode_images_torch(vision_model, aligner, patches, vit_grid):
++    """Reference-style per-image PyTorch tower runner.
++
++    This mirrors the non-packed control flow in the upstream multimodal
++    wrapper.  It is deliberately simple because it is a correctness fallback,
++    not the throughput path.
++    """
++    image_embeds_list = []
++    vit_offset = 0
++    for n_vit_h, n_vit_w in vit_grid:
++        n_vit = n_vit_h * n_vit_w
++        image_embeds_list.append(
++            aligner(
++                vision_model(
++                    patches[vit_offset : vit_offset + n_vit],
++                    n_vit_h,
++                    n_vit_w,
++                ),
++                n_vit_h,
++                n_vit_w,
++            )
++        )
++        vit_offset += n_vit
++    return image_embeds_list
++
++
++def _make_torch_vit(config, *, use_data_parallel):
++    """Adapt the compatibility ViT constructor to the TileLang factory API."""
++    if not use_data_parallel:
++        raise ValueError("the torch vision backend requires data parallel mode")
++    from vllm.models.deepseek_v4.common.vision import DeepseekV4ViT
++
++    return DeepseekV4ViT(config, tensorfold_compat_attention=True)
++
++
++def _make_torch_aligner(config, *, use_data_parallel):
++    """Adapt the compatibility aligner constructor to the TileLang factory API."""
++    if not use_data_parallel:
++        raise ValueError("the torch vision backend requires data parallel mode")
++    from vllm.models.deepseek_v4.common.vision import DeepseekV4Aligner
++
++    return DeepseekV4Aligner(config)
++
++
+ def _vision_tower():
+-    """The TileLang ViT, aligner, packed batch encoder and data-parallel image
+-    runner, over the checkpoint's parameter tree."""
++    """Select the optimized TileLang tower or the PyTorch compatibility lane.
++
++    The compatibility lane reuses vLLM's existing DeepSeek-V4 reference-style
++    PyTorch modules.  It must be paired with ``--mm-encoder-tp-mode data`` so
++    every assigned image is evaluated by one complete tower.
++    """
++    backend = os.environ.get("VLLM_DSV41_VISION_BACKEND", "tilelang")
++    if backend == "torch":
++        from vllm.models.deepseek_v4.common.vision import run_dp_sharded_vision_tower
++
++        return (
++            _make_torch_vit,
++            _make_torch_aligner,
++            run_dp_sharded_vision_tower,
++            _encode_images_torch,
++        )
++    if backend != "tilelang":
++        raise ValueError(
++            "VLLM_DSV41_VISION_BACKEND must be 'tilelang' or 'torch', "
++            f"got {backend!r}"
++        )
++
++    # The optimized TileLang ViT, aligner, packed batch encoder and
++    # data-parallel image runner, over the checkpoint's parameter tree.
+     from .tilelang_vision import (
+         DeepseekV4Aligner,
+         DeepseekV4ViT,

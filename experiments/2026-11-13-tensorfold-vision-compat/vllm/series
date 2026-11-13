@@ -1,0 +1,4 @@
+0001-dsv41-tensorfold-fp32-vision-attention.patch
+0002-dsv41-select-torch-vision-compat.patch
+0003-dsv41-tensorfold-bf16-vision-activation.patch
+0004-dsv41-test-torch-vision-selector.patch

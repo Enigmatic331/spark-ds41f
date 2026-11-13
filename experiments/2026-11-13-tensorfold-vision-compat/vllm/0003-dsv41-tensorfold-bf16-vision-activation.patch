@@ -1,0 +1,195 @@
+Subject: [PATCH] DeepSeek vision: preserve the TensorFold BF16 SwiGLU boundary
+
+Base: patches 0001 and 0002 in this local experiment, over the imported
+Christopher Owen 1107 stack and Local Inference Lab vLLM
+19f2c20ed4d64ae22bd009ceacadd85e2a81e354.
+
+Rationale: paired GB10 traces showed that the compatibility attention path was
+already byte-identical to TensorFold.  The first remaining mismatch was the
+vision MLP activation.  TensorFold evaluates SiLU in FP32, rounds that result
+to BF16, multiplies the BF16 value by the BF16 up branch in FP32, then rounds
+the product to BF16.  Preserve that observable intermediate explicitly and
+disable compiler fusion for this small opt-in compatibility module.
+
+Scope: the new activation is selected only when the existing
+tensorfold_compat_attention option is enabled.  vLLM's ordinary SiluAndMul and
+the default TileLang lane remain unchanged.
+
+Provenance: the generic tower and ordinary activation interface are upstream
+vLLM Apache-2.0 code ported from DeepSeek's MIT reference.  The arithmetic
+sequence is a local AI-assisted adaptation of behavior recorded from
+bertholomus/TensorFold@6062066f65a05a7799c09b9aadde0517ded82105
+(Apache-2.0); no TensorFold source or binary is copied.  Claude reviewed the
+diagnosis, while the paired tensor hashes are the authoritative evidence.
+
+Validation: 24 focused CPU tests passed on DGX02.  On GB10, both 65x103-patch
+Etherscan fixtures matched TensorFold at all 102 recorded stages, including
+the activation, final rows and 794-token aligned spans, with zero differing
+BF16 values.  End-to-end strict served-output qualification is a separate
+gate and is not claimed by this patch.
+
+Local experiment only; not represented as upstream-ready or PR-ready.
+---
+ tests/models/test_deepseek_v4_vision.py  | 77 ++++++++++++++++++++++++
+ vllm/models/deepseek_v4/common/vision.py | 47 +++++++++++++--
+ 2 files changed, 121 insertions(+), 3 deletions(-)
+
+diff --git a/tests/models/test_deepseek_v4_vision.py b/tests/models/test_deepseek_v4_vision.py
+--- a/tests/models/test_deepseek_v4_vision.py
++++ b/tests/models/test_deepseek_v4_vision.py
+@@ -248,6 +248,83 @@ def test_tensorfold_compat_attention_is_opt_in(monkeypatch, tensorfold_compat):
+         assert entered_backends == []
+ 
+ 
++def test_tensorfold_compat_activation_preserves_bf16_rounding_boundary():
++    from vllm.models.deepseek_v4.common import vision
++
++    # These BF16 values distinguish a staged BF16 SiLU + BF16 multiply from
++    # arithmetic that retains SiLU in FP32 through the multiply. This does not
++    # assume which path the ordinary CUDA SiluAndMul kernel takes.
++    gate_up = torch.tensor([[-7.8125, -6.625]], dtype=torch.bfloat16)
++    actual = vision.DeepseekV4VisionSiluAndMul()(gate_up)
++    gate = gate_up[..., :1].float()
++    up = gate_up[..., 1:].float()
++    staged_silu = (gate / (1.0 + torch.exp(-gate))).to(torch.bfloat16)
++    expected = (staged_silu.float() * up).to(torch.bfloat16)
++    fused = (
++        torch.nn.functional.silu(gate_up[..., :1].float())
++        * gate_up[..., 1:].float()
++    ).to(torch.bfloat16)
++
++    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++    assert actual.dtype == torch.bfloat16
++    assert actual.item() == 0.0208740234375
++    assert fused.item() == 0.02099609375
++
++
++@pytest.mark.parametrize(
++    ("gate_up", "error", "message"),
++    [
++        (torch.zeros(1, 2), TypeError, "requires BF16"),
++        (
++            torch.zeros(1, 3, dtype=torch.bfloat16),
++            ValueError,
++            "width must be even",
++        ),
++    ],
++)
++def test_tensorfold_compat_activation_rejects_other_arithmetic(gate_up, error, message):
++    from vllm.models.deepseek_v4.common import vision
++
++    with pytest.raises(error, match=message):
++        vision.DeepseekV4VisionSiluAndMul()(gate_up)
++
++
++@pytest.mark.parametrize("tensorfold_compat", [False, True])
++def test_tensorfold_compat_activation_is_opt_in(monkeypatch, tensorfold_compat):
++    from torch import nn
++
++    from vllm.models.deepseek_v4.common import vision
++
++    class DefaultSiluAndMul(nn.Module):
++        def forward(self, x):
++            return x
++
++    monkeypatch.setattr(vision, "is_vit_use_data_parallel", lambda _heads: True)
++    monkeypatch.setattr(vision, "SiluAndMul", DefaultSiluAndMul)
++    monkeypatch.setattr(
++        vision,
++        "MergedColumnParallelLinear",
++        lambda *args, **kwargs: nn.Identity(),
++    )
++    monkeypatch.setattr(
++        vision,
++        "RowParallelLinear",
++        lambda *args, **kwargs: nn.Identity(),
++    )
++    config = SimpleNamespace(vision_n_heads=2, vision_dim=8, vision_inter_dim=16)
++    mlp = vision.DeepseekV4VisionMLP(
++        config,
++        tensorfold_compat_activation=tensorfold_compat,
++    )
++
++    expected_type = (
++        vision.DeepseekV4VisionSiluAndMul
++        if tensorfold_compat
++        else DefaultSiluAndMul
++    )
++    assert isinstance(mlp.act_fn, expected_type)
++
++
+ @pytest.mark.parametrize("device", [None, torch.device("cpu")])
+ def test_vision_rope_explicit_device_controls_tensor_construction(monkeypatch, device):
+     from vllm.models.deepseek_v4.common import vision
+diff --git a/vllm/models/deepseek_v4/common/vision.py b/vllm/models/deepseek_v4/common/vision.py
+--- a/vllm/models/deepseek_v4/common/vision.py
++++ b/vllm/models/deepseek_v4/common/vision.py
+@@ -174,8 +174,41 @@ class DeepseekV4VisionAttention(nn.Module):
+         return out
+ 
+ 
++class DeepseekV4VisionSiluAndMul(nn.Module):
++    """Reference-style vision SwiGLU with an observable BF16 boundary.
++
++    Spell out the arithmetic recorded by TensorFold's Apache-2.0
++    DeepSeek-V4.1 kernel: evaluate
++    ``g / (1 + exp(-g))`` in FP32, round that result to BF16, multiply it by
++    the BF16 ``up`` value in FP32, then round the product to BF16.  The eager
++    barrier prevents an optional encoder compiler from folding away that
++    observable intermediate.  vLLM's ordinary ``SiluAndMul`` remains the
++    default path.
++    """
++
++    @torch.compiler.disable
++    def forward(self, x: torch.Tensor) -> torch.Tensor:
++        if x.dtype != torch.bfloat16:
++            raise TypeError(
++                "TensorFold-compatible vision activation requires BF16 input"
++            )
++        if x.shape[-1] % 2:
++            raise ValueError("vision SwiGLU input width must be even")
++        d = x.shape[-1] // 2
++        gate = x[..., :d].float()
++        up = x[..., d:].float()
++        gate_silu = (gate / (1.0 + torch.exp(-gate))).to(x.dtype)
++        return (gate_silu.float() * up).to(x.dtype)
++
++
+ class DeepseekV4VisionMLP(nn.Module):
+-    def __init__(self, config, prefix: str = ""):
++    def __init__(
++        self,
++        config,
++        prefix: str = "",
++        *,
++        tensorfold_compat_activation: bool = False,
++    ):
+         super().__init__()
+         use_data_parallel = is_vit_use_data_parallel(config.vision_n_heads)
+         self.w1 = MergedColumnParallelLinear(
+@@ -194,7 +227,11 @@ class DeepseekV4VisionMLP(nn.Module):
+             prefix=f"{prefix}.w2",
+             disable_tp=use_data_parallel,
+         )
+-        self.act_fn = SiluAndMul()
++        self.act_fn = (
++            DeepseekV4VisionSiluAndMul()
++            if tensorfold_compat_activation
++            else SiluAndMul()
++        )
+ 
+     def forward(self, x: torch.Tensor) -> torch.Tensor:
+         gate_up, _ = self.w1(x)
+@@ -218,7 +255,11 @@ class DeepseekV4VisionBlock(nn.Module):
+             tensorfold_compat_attention=tensorfold_compat_attention,
+         )
+         self.norm2 = DeepseekV4RMSNorm(config.vision_dim)
+-        self.mlp = DeepseekV4VisionMLP(config, prefix=f"{prefix}.mlp")
++        self.mlp = DeepseekV4VisionMLP(
++            config,
++            prefix=f"{prefix}.mlp",
++            tensorfold_compat_activation=tensorfold_compat_attention,
++        )
+ 
+     def forward(
+         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor

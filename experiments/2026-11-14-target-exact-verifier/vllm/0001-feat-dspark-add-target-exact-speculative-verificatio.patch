@@ -1,0 +1,524 @@
+From 6ae956399820e56dbcdfd2a4fbf15016b30d317e Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 21:24:04 +0800
+Subject: [PATCH] feat(dspark): add target-exact speculative verification
+
+AI-assisted adaptation over the imported Christopher/vLLM 1107 materialized baseline. The behavior is independently implemented from the public exact-prefix verification semantics used by TensorFold; no TensorFold Zig/CUDA source was copied. This commit is experimental and not an upstream-readiness or authorship claim for the imported baseline.
+---
+ .../gpu/test_target_exact_verification.py     | 129 ++++++++++++++++++
+ vllm/config/speculative.py                    |  21 ++-
+ vllm/v1/sample/rejection_sampler.py           |   8 ++
+ .../v1/worker/gpu/sample/tilelang_sampling.py | 108 +++++++++++++++
+ .../gpu/spec_decode/rejection_sampler.py      | 120 ++++++++++++----
+ 5 files changed, 356 insertions(+), 30 deletions(-)
+ create mode 100644 tests/v1/worker/gpu/test_target_exact_verification.py
+
+diff --git a/tests/v1/worker/gpu/test_target_exact_verification.py b/tests/v1/worker/gpu/test_target_exact_verification.py
+new file mode 100644
+index 000000000..9183c4f57
+--- /dev/null
++++ b/tests/v1/worker/gpu/test_target_exact_verification.py
+@@ -0,0 +1,129 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Position-keyed target samples commit the serial target prefix exactly."""
++
++from types import SimpleNamespace
++
++import pytest
++import torch
++
++from vllm.v1.worker.gpu.sample import tilelang_sampling
++
++DEVICE = "cuda"
++pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
++
++
++def _reference(
++    target: torch.Tensor,
++    drafts: torch.Tensor,
++    offsets: list[int],
++    width: int,
++) -> tuple[torch.Tensor, torch.Tensor]:
++    sampled = torch.empty((len(offsets) - 1, width), dtype=torch.int64)
++    counts = torch.empty(len(offsets) - 1, dtype=torch.int32)
++    target = target.cpu()
++    drafts = drafts.cpu()
++    for req, (start, end) in enumerate(zip(offsets, offsets[1:])):
++        num_drafts = end - start - 1
++        accepted = 0
++        for step in range(num_drafts):
++            draft = int(drafts[start + step + 1])
++            expected = int(target[start + step])
++            if draft >= 0 and draft == expected:
++                sampled[req, step] = draft
++                accepted += 1
++            else:
++                sampled[req, step] = expected
++                break
++        if accepted == num_drafts:
++            sampled[req, num_drafts] = target[start + num_drafts]
++        counts[req] = accepted + 1
++    return sampled, counts
++
++
++@pytest.mark.parametrize("draft_dtype", [torch.int32, torch.int64])
++def test_target_exact_commits_only_the_matching_prefix(draft_dtype):
++    drafts_per_req = [5, 3, 0, 5, 1, 4]
++    accepted_per_req = [5, 1, 0, 2, 0, 3]
++    offsets = [0]
++    for count in drafts_per_req:
++        offsets.append(offsets[-1] + count + 1)
++
++    target = torch.arange(offsets[-1], dtype=torch.int64, device=DEVICE) + 100
++    drafts = torch.full(
++        (offsets[-1],), -777, dtype=draft_dtype, device=DEVICE
++    )
++    for req, (count, accepted) in enumerate(
++        zip(drafts_per_req, accepted_per_req)
++    ):
++        start = offsets[req]
++        for step in range(count):
++            if step < accepted:
++                drafts[start + step + 1] = target[start + step]
++            elif step == accepted:
++                # Exercise both an ordinary mismatch and the -1 placeholder.
++                drafts[start + step + 1] = (
++                    -1 if req % 2 else target[start + step] + 1
++                )
++            else:
++                # These rows are target outputs for a rejected speculative suffix
++                # and must never affect the committed result.
++                drafts[start + step + 1] = target[start + step]
++
++    cu = torch.tensor(offsets, dtype=torch.int32, device=DEVICE)
++    sampled, counts = tilelang_sampling.target_exact_rejection_sample(
++        target, drafts, cu, num_speculative_steps=5
++    )
++    expected, expected_counts = _reference(target, drafts, offsets, width=6)
++
++    assert torch.equal(counts.cpu(), expected_counts)
++    for req, count in enumerate(expected_counts.tolist()):
++        assert torch.equal(sampled[req, :count].cpu(), expected[req, :count])
++
++
++def test_target_exact_declaration_covers_both_step_widths():
++    from vllm.model_executor.warmup.jit_warmup import JitWarmupRegistry
++    from vllm.models.deepseek_v4_1.tilelang import prepare
++    from vllm.v1.worker.gpu.spec_decode.rejection_sampler import RejectionSampler
++
++    owner = RejectionSampler.__new__(RejectionSampler)
++    owner.sampler = SimpleNamespace(
++        use_fp64_gumbel=False,
++        logprobs_mode="raw_logprobs",
++    )
++    owner.num_speculative_steps = 9
++    owner.num_draft_steps = 5
++    owner.watermark_key = None
++    owner.use_block_verification = False
++    owner.use_target_exact_verification = True
++    owner.synthetic_conditional_rates = None
++
++    registry = JitWarmupRegistry(None)
++    with registry.activate():
++        owner.register_warmups(
++            logits=[(torch.bfloat16, 129408)],
++            processed_logits=[(torch.float32, 129280)],
++            vocab_size=129280,
++            has_draft_logits=False,
++            dead_rows=True,
++        )
++    calls = prepare.declared_calls(registry)
++    declared = {
++        args
++        for factory, args, _ in calls
++        if factory is tilelang_sampling.target_exact_rejection_kernel
++    }
++    assert declared == {
++        (6, "int64", "int32"),
++        (6, "int64", "int64"),
++        (10, "int64", "int32"),
++        (10, "int64", "int64"),
++    }
++
++
++def test_target_exact_rejects_incompatible_shapes():
++    target = torch.zeros(4, dtype=torch.int64, device=DEVICE)
++    drafts = torch.zeros(3, dtype=torch.int32, device=DEVICE)
++    cu = torch.tensor([0, 4], dtype=torch.int32, device=DEVICE)
++    with pytest.raises(ValueError, match="same shape"):
++        tilelang_sampling.target_exact_rejection_sample(target, drafts, cu, 3)
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index d7cf118ba..69739be1e 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -84,7 +84,7 @@ SpeculativeMethod = Literal[
+     NgramGPUTypes,
+     DSparkModelTypes,
+ ]
+-RejectionSampleMethod = Literal["standard", "synthetic", "block"]
++RejectionSampleMethod = Literal["standard", "synthetic", "block", "target_exact"]
+ DraftSampleMethod = Literal["greedy", "probabilistic"]
+ 
+ _QWEN3_OMNI_TARGET_ARCHITECTURES = frozenset(
+@@ -589,7 +589,10 @@ class SpeculativeConfig:
+     draft_sample_method). 'synthetic' accepts draft tokens with a decaying
+     probability calibrated to synthetic_acceptance_rate. 'block' uses block
+     verification (Sun et al.), which jointly verifies the draft tokens as a
+-    block instead of one at a time."""
++    block instead of one at a time. 'target_exact' independently samples the
++    target at every absolute token position, accepts only an exactly matching
++    draft prefix, and commits the first mismatching target sample (or the bonus
++    target sample when every draft matches)."""
+ 
+     synthetic_acceptance_rates: list[float] | None = None
+     """Per-position *unconditional* acceptance rates for synthetic rejection
+@@ -2065,6 +2068,20 @@ class SpeculativeConfig:
+                 "are only valid with rejection_sample_method='synthetic'."
+             )
+ 
++        if self.rejection_sample_method == "target_exact":
++            if self.method != "dspark" or self.draft_sample_method != "greedy":
++                raise ValueError(
++                    "target_exact verification is qualified only for greedy DSpark"
++                )
++            if self.enable_adaptive_verification:
++                raise ValueError(
++                    "target_exact verification does not support adaptive verification"
++                )
++            if self.num_speculative_tokens > 31:
++                raise ValueError(
++                    "target_exact verification supports at most 31 draft tokens"
++                )
++
+         if self.draft_model_config:
+             self.draft_model_config.verify_with_parallel_config(
+                 self.draft_parallel_config
+diff --git a/vllm/v1/sample/rejection_sampler.py b/vllm/v1/sample/rejection_sampler.py
+index b42177fbd..10f5fe8ad 100644
+--- a/vllm/v1/sample/rejection_sampler.py
++++ b/vllm/v1/sample/rejection_sampler.py
+@@ -84,6 +84,14 @@ class RejectionSampler(nn.Module):
+             "processed_logits",
+         )
+ 
++        if (
++            spec_config is not None
++            and spec_config.rejection_sample_method == "target_exact"
++        ):
++            raise ValueError(
++                "target_exact verification requires VLLM_USE_V2_MODEL_RUNNER=1"
++            )
++
+         self.synthetic_conditional_rates: torch.Tensor | None = None
+         if (
+             spec_config is not None
+diff --git a/vllm/v1/worker/gpu/sample/tilelang_sampling.py b/vllm/v1/worker/gpu/sample/tilelang_sampling.py
+index 05dbc6718..8dacceede 100644
+--- a/vllm/v1/worker/gpu/sample/tilelang_sampling.py
++++ b/vllm/v1/worker/gpu/sample/tilelang_sampling.py
+@@ -3130,6 +3130,100 @@ def greedy_rejection_sample(
+     return sampled, num_sampled
+ 
+ 
++@tilelang.jit(pass_configs=_PASS)
++def target_exact_rejection_kernel(
++    width: int, target_dtype: str, drafts_dtype: str
++):
++    """Commit an exact target-sampled prefix, a warp per request.
++
++    ``target_sampled`` contains one independently sampled target token for every
++    verification row. A draft is accepted only while it equals the target draw
++    at that position. The first mismatch commits the target draw; a fully
++    accepted draft block commits the bonus row's target draw.
++    """
++    if not 1 <= width <= 32:
++        raise ValueError(f"{width} sampled tokens a request: a warp takes them")
++    reqs, cu_len, target_len, drafts_len = T.dynamic(
++        "reqs, cu_len, target_len, drafts_len"
++    )
++
++    @T.prim_func
++    def target_exact_rejection(
++        sampled: T.Tensor((reqs, width), T.int64),
++        num_sampled: T.Tensor((reqs,), T.int32),
++        target_sampled: T.Tensor((target_len,), target_dtype),
++        draft_sampled: T.Tensor((drafts_len,), drafts_dtype),
++        cu_num_logits: T.Tensor((cu_len,), T.int32),
++    ):
++        with T.Kernel(reqs, threads=32) as req:
++            tx = T.get_thread_binding()
++            targets = T.alloc_shared((width,), T.int64)
++            drafts = T.alloc_shared((width,), T.int64)
++            accepted = T.alloc_local((1,), T.int64)
++            verifying = T.alloc_local((1,), T.int32)
++            start = T.alloc_var(T.int64, init=T.cast(cu_num_logits[req], T.int64))
++            num_drafts = T.alloc_var(
++                T.int64, init=T.cast(cu_num_logits[req + 1], T.int64) - start - 1
++            )
++            if (tx < width) & (T.cast(tx, T.int64) <= num_drafts):
++                targets[tx] = T.cast(target_sampled[start + tx], T.int64)
++                if T.cast(tx, T.int64) < num_drafts:
++                    drafts[tx] = T.cast(draft_sampled[start + tx + 1], T.int64)
++            T.sync_threads()
++            if tx == 0:
++                accepted[0] = 0
++                verifying[0] = 1
++                for i in tuple(range(width - 1)):
++                    if (num_drafts > i) & (verifying[0] != 0):
++                        # -1 is a padding/disabled draft and can never be accepted.
++                        if (targets[i] == drafts[i]) & (drafts[i] >= 0):
++                            sampled[req, i] = drafts[i]
++                            accepted[0] = accepted[0] + 1
++                        else:
++                            sampled[req, i] = targets[i]
++                            verifying[0] = 0
++                if accepted[0] == num_drafts:
++                    sampled[req, num_drafts] = targets[num_drafts]
++                num_sampled[req] = T.cast(accepted[0] + 1, T.int32)
++
++    return target_exact_rejection
++
++
++def target_exact_rejection_key(
++    width: int, target_dtype: torch.dtype, drafts_dtype: torch.dtype
++) -> tuple:
++    return (width, _DTYPES[target_dtype], _DTYPES[drafts_dtype])
++
++
++def target_exact_rejection_sample(
++    target_sampled: torch.Tensor,
++    draft_sampled: torch.Tensor,
++    cu_num_logits: torch.Tensor,
++    num_speculative_steps: int,
++) -> tuple[torch.Tensor, torch.Tensor]:
++    """Return the committed prefix from position-keyed target samples."""
++    if target_sampled.ndim != 1 or draft_sampled.ndim != 1:
++        raise ValueError("target and draft samples must be one-dimensional")
++    if target_sampled.shape != draft_sampled.shape:
++        raise ValueError("target and draft sample rows must have the same shape")
++    num_reqs = cu_num_logits.shape[0] - 1
++    sampled = draft_sampled.new_empty(
++        num_reqs, num_speculative_steps + 1, dtype=torch.int64
++    )
++    num_sampled = sampled.new_empty(num_reqs, dtype=torch.int32)
++    if num_reqs > 0:
++        kernel = _kernel(
++            target_exact_rejection_kernel,
++            *target_exact_rejection_key(
++                num_speculative_steps + 1,
++                target_sampled.dtype,
++                draft_sampled.dtype,
++            ),
++        )
++        kernel(sampled, num_sampled, target_sampled, draft_sampled, cu_num_logits)
++    return sampled, num_sampled
++
++
+ # --- Temperature --------------------------------------------------------------
+ 
+ 
+@@ -3564,6 +3658,20 @@ def sampling_calls(
+     return _unique(calls)
+ 
+ 
++def target_exact_rejection_calls(widths: Sequence[int]) -> list:
++    """Exact target-prefix commit calls for the runner's token dtypes."""
++    return _unique(
++        [
++            _call(
++                target_exact_rejection_kernel,
++                *target_exact_rejection_key(width, torch.int64, drafts_dtype),
++            )
++            for width in widths
++            for drafts_dtype in (torch.int32, torch.int64)
++        ]
++    )
++
++
+ def gumbel_finish_calls(vocab_size: int) -> list:
+     """The finish of Gumbel-max sampling of ``vocab_size``-wide logits."""
+     num_blocks = -(-vocab_size // GUMBEL_BLOCK)
+diff --git a/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py b/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
+index 463022c3a..d5c8e3f7b 100644
+--- a/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
++++ b/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
+@@ -9,6 +9,7 @@ import torch
+ 
+ from vllm.config import SpeculativeConfig, get_current_vllm_config
+ from vllm.config.model import PROCESSED_LOGPROBS_MODES
++from vllm.logger import init_logger
+ from vllm.utils.math_utils import cdiv
+ from vllm.utils.torch_utils import async_tensor_h2d
+ from vllm.v1.outputs import LogprobsTensors
+@@ -21,6 +22,8 @@ from vllm.v1.worker.gpu.input_batch import (
+     logits_rows,
+ )
+ from vllm.v1.worker.gpu.metrics.logits import get_num_nans
++from vllm.v1.worker.gpu.sample import tilelang_sampling
++from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
+ from vllm.v1.worker.gpu.sample.logprob import (
+     compute_topk_scores,
+     register_topk_scores_warmup,
+@@ -43,6 +46,8 @@ from vllm.v1.worker.gpu.spec_decode.tilelang_resampled import register_insert
+ MAX_CHUNK_BYTES = 2**30  # 1GB
+ _FP32_BYTES = 4
+ 
++logger = init_logger(__name__)
++
+ 
+ def get_max_chunk_logits(vocab_size: int) -> int:
+     """Largest number of logits rows one verification chunk may hold."""
+@@ -97,6 +102,7 @@ class RejectionSampler:
+         self.enable_adaptive_verification = spec_config.enable_adaptive_verification
+         rejection_sample_method = spec_config.rejection_sample_method
+         self.use_block_verification: bool = False
++        self.use_target_exact_verification: bool = False
+         self.synthetic_conditional_rates: torch.Tensor | None = None
+         if rejection_sample_method == "synthetic":
+             assert spec_config.synthetic_acceptance_rates is not None
+@@ -109,6 +115,20 @@ class RejectionSampler:
+             )
+         elif rejection_sample_method == "block":
+             self.use_block_verification = True
++        elif rejection_sample_method == "target_exact":
++            if watermark_key is not None:
++                raise ValueError(
++                    "target_exact verification does not support watermarking"
++                )
++            if self.num_speculative_steps + 1 > 32:
++                raise ValueError(
++                    "target_exact verification supports at most 31 draft tokens"
++                )
++            self.use_target_exact_verification = True
++            logger.info_once(
++                "Target-exact speculative verification enabled: position-keyed "
++                "target samples with exact draft-prefix matching."
++            )
+ 
+     def register_warmups(
+         self,
+@@ -121,11 +141,34 @@ class RejectionSampler:
+     ) -> None:
+         """Register verification of target logits given as ``(dtype, row stride)``
+         pairs, raw (``logits``) or after sampling parameters (``processed_logits``),
+-        and the logprobs of verified tokens. Draft logits and watermarking are not
+-        covered by Triton warmup; the TileLang insertion is always declared. When
+-        the step can have dead rows (``dead_rows``), block verification declares its
+-        kernels with a dead-row cut (and refuses the configurations its TileLang
+-        kernels do not serve), and the other methods the insertion capped at it."""
++        and the logprobs of verified tokens. Target-exact verification declares its
++        prefix-commit kernels; the ordinary methods declare their resampling paths.
++        Draft logits and watermarking are not covered by Triton warmup. When the step
++        can have dead rows (``dead_rows``), block verification declares its kernels
++        with a dead-row cut (and refuses the configurations its TileLang kernels do
++        not serve), while the row-wise methods cap the committed count afterward."""
++        if getattr(self, "use_target_exact_verification", False):
++            widths = tuple(
++                dict.fromkeys(
++                    (
++                        self.num_speculative_steps + 1,
++                        self.num_draft_steps + 1,
++                    )
++                )
++            )
++            tilelang_sampling.declare(
++                lambda: tilelang_sampling.target_exact_rejection_calls(widths)
++            )
++            tilelang_inputs.declare(tilelang_inputs.flatten_sampled_calls)
++            use_processed = self.sampler.logprobs_mode in PROCESSED_LOGPROBS_MODES
++            register_topk_scores_warmup(
++                logits=processed_logits if use_processed else logits,
++                vocab_size=vocab_size,
++                logits_mode=self.sampler.logprobs_mode
++                in ("raw_logits", "processed_logits"),
++            )
++            return
++
+         triton_only = (
+             has_draft_logits
+             or self.watermark_key is not None
+@@ -256,7 +299,10 @@ class RejectionSampler:
+         ``kernel_steps``: the drafts every request of the step verifies at most,
+         the width block verification's kernels run at."""
+         in_kernel_temperature = (
+-            self.use_block_verification
++            (
++                self.use_block_verification
++                or getattr(self, "use_target_exact_verification", False)
++            )
+             and draft_logits is None
+             and self.synthetic_conditional_rates is None
+             and self.watermark_key is None
+@@ -286,28 +332,46 @@ class RejectionSampler:
+                 cu_num_logits,
+                 idx_mapping.shape[0],
+             )
+-        sampled, num_sampled = rejection_sample(
+-            processed_logits,
+-            draft_logits,
+-            draft_sampled,
+-            cu_num_logits,
+-            pos,
+-            idx_mapping,
+-            expanded_idx_mapping,
+-            expanded_local_pos,
+-            self.sampler.sampling_states.temperature.gpu,
+-            self.sampler.sampling_states.seeds.gpu,
+-            self.num_speculative_steps,
+-            self.synthetic_conditional_rates,
+-            use_fp64=self.sampler.use_fp64_gumbel,
+-            use_block_verification=self.use_block_verification,
+-            dead_row_cut=dead_row_cut,
+-            kernel_steps=kernel_steps,
+-            **({"apply_temperature": True} if in_kernel_temperature else {}),
+-            **self._watermarking_kwargs(
+-                draft_sampled, expanded_idx_mapping, expanded_local_pos
+-            ),
+-        )
++        if getattr(self, "use_target_exact_verification", False):
++            target_sampled = gumbel_sample(
++                processed_logits,
++                expanded_idx_mapping,
++                self.sampler.sampling_states.temperature.gpu,
++                self.sampler.sampling_states.seeds.gpu,
++                pos,
++                apply_temperature=in_kernel_temperature,
++                is_drafting=False,
++                use_fp64=self.sampler.use_fp64_gumbel,
++            )
++            sampled, num_sampled = tilelang_sampling.target_exact_rejection_sample(
++                target_sampled,
++                draft_sampled,
++                cu_num_logits,
++                kernel_steps or self.num_speculative_steps,
++            )
++        else:
++            sampled, num_sampled = rejection_sample(
++                processed_logits,
++                draft_logits,
++                draft_sampled,
++                cu_num_logits,
++                pos,
++                idx_mapping,
++                expanded_idx_mapping,
++                expanded_local_pos,
++                self.sampler.sampling_states.temperature.gpu,
++                self.sampler.sampling_states.seeds.gpu,
++                self.num_speculative_steps,
++                self.synthetic_conditional_rates,
++                use_fp64=self.sampler.use_fp64_gumbel,
++                use_block_verification=self.use_block_verification,
++                dead_row_cut=dead_row_cut,
++                kernel_steps=kernel_steps,
++                **({"apply_temperature": True} if in_kernel_temperature else {}),
++                **self._watermarking_kwargs(
++                    draft_sampled, expanded_idx_mapping, expanded_local_pos
++                ),
++            )
+         if cut is not None:
+             assert self.sink is not None and sink is not None
+             # From the scores the last tokens were drawn from: the cut stays
+-- 
+2.43.0
+

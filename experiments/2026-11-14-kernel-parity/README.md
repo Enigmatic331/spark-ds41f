@@ -67,6 +67,17 @@ independently challenged the one-window derivation and agreed with this
 dependency frontier; only local traces and end-to-end tests count as evidence.
 Default behavior is unchanged; qualification is pending.
 
+Prefix-hit exactness fix:
+`vllm/0011-fix-dsv41-preserve-exact-CED-warmup-across-prefix-hi.patch`,
+exported from AI-assisted commit `ca1900e33`. Christopher's CED decoder and
+drafter pages are request-private, so a prefix-cache hit must rebuild the same
+2,541-row dependency frontier rather than the ordinary 128-row suffix. The
+patch derives the scheduler replay cap and model-state warm-up from one
+decoder-depth formula and expands compact planning capacities accordingly.
+Default behavior remains unchanged. Cached and production-profile validation
+passed; the trace-free deployment stack and results are documented in
+`../2026-11-14-ced-exact-production/`.
+
 ## Locked acceptance case
 
 - Checkpoint: `deepseek-ai/DeepSeek-V4.1-Flash` revision

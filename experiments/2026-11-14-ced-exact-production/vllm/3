@@ -1,0 +1,86 @@
+From 6e4cf616f60f83bf4755240fe84b2726aaa0a82a Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 06:57:30 +0800
+Subject: [PATCH 3/4] fix(dsv41): propagate CED warmup through decoder depth
+
+---
+ .../v1/attention/test_b12x_v41_ced_metadata.py |  9 +++++++--
+ vllm/models/deepseek_v4_1/ced.py               |  8 ++++----
+ .../models/deepseek_v4_1/nvidia/model_state.py | 18 +++++++++++++-----
+ 3 files changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/tests/v1/attention/test_b12x_v41_ced_metadata.py b/tests/v1/attention/test_b12x_v41_ced_metadata.py
+index ab73bdf16..f3b790751 100644
+--- a/tests/v1/attention/test_b12x_v41_ced_metadata.py
++++ b/tests/v1/attention/test_b12x_v41_ced_metadata.py
+@@ -160,8 +160,8 @@ def test_replay_rows_anchor_at_the_prompt_end():
+     assert replay_rows([4096], [0], [8192], [64], [True]) == ([64], [KEEP_ALL])
+ 
+ 
+-def test_exact_warmup_replays_one_extra_swa_window():
+-    """Warm-up makes the retained 128 decoder rows see complete SWA history."""
++def test_decoder_warmup_extends_only_prompt_replay():
++    """Warm-up extends prompt replay while decode stays at 128 rows."""
+     assert replay_rows(
+         [1060], [0], [1060], [0], [False], None, CED_WINDOW - 1
+     ) == ([805], [2 * CED_WINDOW - 1])
+@@ -169,6 +169,11 @@ def test_exact_warmup_replays_one_extra_swa_window():
+     assert replay_rows(
+         [6], [1060], [1060], [0], [False], None, CED_WINDOW - 1
+     ) == ([0], [CED_WINDOW])
++    # Twenty replayed decoder layers require a 2,541-row receptive field.
++    propagated = 19 * (CED_WINDOW - 1)
++    assert replay_rows(
++        [4000], [0], [4000], [0], [False], None, propagated
++    ) == ([1459], [2541])
+     with pytest.raises(ValueError, match="non-negative"):
+         replay_rows([1], [0], [1], [0], [False], None, -1)
+ 
+diff --git a/vllm/models/deepseek_v4_1/ced.py b/vllm/models/deepseek_v4_1/ced.py
+index d9414a8a2..d662d1265 100644
+--- a/vllm/models/deepseek_v4_1/ced.py
++++ b/vllm/models/deepseek_v4_1/ced.py
+@@ -152,10 +152,10 @@ def replay_rows(
+     recovery to the final window would change the earlier rows that deeper
+     decoder layers consume.
+ 
+-    ``decoder_warmup`` extends only the prompt replay floor.  With a value of
+-    ``CED_WINDOW - 1``, the first retained decoder row has a complete preceding
+-    SWA window and the final ``CED_WINDOW`` prompt rows are identical to a full
+-    decoder prefill; the warm-up rows fall out of the normal decode window.
++    ``decoder_warmup`` extends only the prompt replay floor. Callers that need
++    full-prefill-equivalent retained state must account for the receptive field
++    growing by ``CED_WINDOW - 1`` at every replayed decoder layer; the warm-up
++    rows fall out of the normal decode window.
+ 
+     A decoding request keeps up to ``CED_WINDOW`` rows from its prefix start: its
+     rows lie past the prompt's floor, whose window no longer reaches it. A
+diff --git a/vllm/models/deepseek_v4_1/nvidia/model_state.py b/vllm/models/deepseek_v4_1/nvidia/model_state.py
+index a00324922..d6833801d 100644
+--- a/vllm/models/deepseek_v4_1/nvidia/model_state.py
++++ b/vllm/models/deepseek_v4_1/nvidia/model_state.py
+@@ -257,11 +257,19 @@ class DeepseekV41ModelState(DefaultModelState):
+         req_ids = batch.req_ids
+         nr = len(req_ids)
+         keep_full = [req_id in self._ced_prompt_logprobs for req_id in req_ids]
+-        decoder_warmup = (
+-            CED_WINDOW - 1
+-            if os.environ.get("VLLM_DS41_CED_EXACT_WARMUP") == "1"
+-            else 0
+-        )
++        decoder_warmup = 0
++        if os.environ.get("VLLM_DS41_CED_EXACT_WARMUP") == "1":
++            hf = self.model_config.hf_config
++            boundary = ced_decoder_start(hf)
++            decoder_layers = (
++                max(int(hf.num_hidden_layers) - boundary, 0)
++                if boundary is not None
++                else 0
++            )
++            # The causal SWA receptive field grows by W-1 per layer.  Keeping
++            # W output rows already supplies the final layer's first window, so
++            # the remaining decoder layers each require one earlier window.
++            decoder_warmup = max(decoder_layers - 1, 0) * (CED_WINDOW - 1)
+         floors, limits = replay_rows(
+             batch.num_scheduled_tokens[:nr],
+             batch.num_computed_prefill_tokens_np[:nr],

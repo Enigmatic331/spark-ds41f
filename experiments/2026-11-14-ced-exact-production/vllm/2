@@ -1,0 +1,117 @@
+From 8aa3f9a9da5f6439170a1faf5b4be0e023e63284 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 06:43:07 +0800
+Subject: [PATCH 2/4] feat(dsv41): warm CED replay for exact retained states
+
+---
+ .../attention/test_b12x_v41_ced_metadata.py   | 13 ++++++++++++
+ vllm/models/deepseek_v4_1/ced.py              | 20 ++++++++++++++++---
+ .../deepseek_v4_1/nvidia/model_state.py       |  7 +++++++
+ 3 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/tests/v1/attention/test_b12x_v41_ced_metadata.py b/tests/v1/attention/test_b12x_v41_ced_metadata.py
+index 8256a0eee..ab73bdf16 100644
+--- a/tests/v1/attention/test_b12x_v41_ced_metadata.py
++++ b/tests/v1/attention/test_b12x_v41_ced_metadata.py
+@@ -160,6 +160,19 @@ def test_replay_rows_anchor_at_the_prompt_end():
+     assert replay_rows([4096], [0], [8192], [64], [True]) == ([64], [KEEP_ALL])
+ 
+ 
++def test_exact_warmup_replays_one_extra_swa_window():
++    """Warm-up makes the retained 128 decoder rows see complete SWA history."""
++    assert replay_rows(
++        [1060], [0], [1060], [0], [False], None, CED_WINDOW - 1
++    ) == ([805], [2 * CED_WINDOW - 1])
++    # Decode stays on the normal 128-row window after the exact prompt prefill.
++    assert replay_rows(
++        [6], [1060], [1060], [0], [False], None, CED_WINDOW - 1
++    ) == ([0], [CED_WINDOW])
++    with pytest.raises(ValueError, match="non-negative"):
++        replay_rows([1], [0], [1], [0], [False], None, -1)
++
++
+ @pytest.mark.parametrize("generated", [1, 127, 128, 129, 255, 256, 257, 8193])
+ @pytest.mark.parametrize("chunk_size", [64, 128, 256, 512, 4096])
+ def test_recovery_keeps_all_rows_from_original_prompt_floor(generated, chunk_size):
+diff --git a/vllm/models/deepseek_v4_1/ced.py b/vllm/models/deepseek_v4_1/ced.py
+index d06143f31..d9414a8a2 100644
+--- a/vllm/models/deepseek_v4_1/ced.py
++++ b/vllm/models/deepseek_v4_1/ced.py
+@@ -128,7 +128,13 @@ def plan_ced(
+ 
+ 
+ def replay_rows(
+-    query_lengths, computed, prefill_lens, prefix_start, keep_full, prompt_lens=None
++    query_lengths,
++    computed,
++    prefill_lens,
++    prefix_start,
++    keep_full,
++    prompt_lens=None,
++    decoder_warmup=0,
+ ) -> tuple[list[int], list[int]]:
+     """Each request's replay floor and kept-row limit, anchored at its prompt end.
+ 
+@@ -146,10 +152,18 @@ def replay_rows(
+     recovery to the final window would change the earlier rows that deeper
+     decoder layers consume.
+ 
++    ``decoder_warmup`` extends only the prompt replay floor.  With a value of
++    ``CED_WINDOW - 1``, the first retained decoder row has a complete preceding
++    SWA window and the final ``CED_WINDOW`` prompt rows are identical to a full
++    decoder prefill; the warm-up rows fall out of the normal decode window.
++
+     A decoding request keeps up to ``CED_WINDOW`` rows from its prefix start: its
+     rows lie past the prompt's floor, whose window no longer reaches it. A
+     ``keep_full`` request (prompt logprobs) keeps every row from its prefix start.
+     """
++    replay_window = CED_WINDOW + int(decoder_warmup)
++    if replay_window < CED_WINDOW:
++        raise ValueError("decoder_warmup must be non-negative")
+     floors, limits = [], []
+     for i, (q, start, total, prefix, full) in enumerate(
+         zip(query_lengths, computed, prefill_lens, prefix_start, keep_full)
+@@ -160,10 +174,10 @@ def replay_rows(
+             floors.append(prefix)
+             limits.append(KEEP_ALL)
+         elif start < total:
+-            floor = max(prefix, prompt_end - CED_WINDOW)
++            floor = max(prefix, prompt_end - replay_window)
+             floors.append(floor)
+             limit = max(start + int(q) - floor, 1)
+-            limits.append(limit if prompt_end < total else min(limit, CED_WINDOW))
++            limits.append(limit if prompt_end < total else min(limit, replay_window))
+         else:
+             floors.append(prefix)
+             limits.append(CED_WINDOW)
+diff --git a/vllm/models/deepseek_v4_1/nvidia/model_state.py b/vllm/models/deepseek_v4_1/nvidia/model_state.py
+index 0a6fdf43f..a00324922 100644
+--- a/vllm/models/deepseek_v4_1/nvidia/model_state.py
++++ b/vllm/models/deepseek_v4_1/nvidia/model_state.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import os
+ from typing import Any
+ 
+ import numpy as np
+@@ -256,6 +257,11 @@ class DeepseekV41ModelState(DefaultModelState):
+         req_ids = batch.req_ids
+         nr = len(req_ids)
+         keep_full = [req_id in self._ced_prompt_logprobs for req_id in req_ids]
++        decoder_warmup = (
++            CED_WINDOW - 1
++            if os.environ.get("VLLM_DS41_CED_EXACT_WARMUP") == "1"
++            else 0
++        )
+         floors, limits = replay_rows(
+             batch.num_scheduled_tokens[:nr],
+             batch.num_computed_prefill_tokens_np[:nr],
+@@ -270,6 +276,7 @@ class DeepseekV41ModelState(DefaultModelState):
+                 if self._ced_recovery_prompt_end
+                 else None
+             ),
++            decoder_warmup,
+         )
+         return keep_full, floors, limits
+ 

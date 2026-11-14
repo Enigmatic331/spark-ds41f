@@ -1,0 +1,222 @@
+From ca1900e33b377961964953325bf30b941e28d4f0 Mon Sep 17 00:00:00 2001
+From: Codex Agent <noreply@openai.com>
+Date: Sat, 14 Nov 2026 07:24:19 +0800
+Subject: [PATCH] fix(dsv41): preserve exact CED warmup across prefix hits
+
+---
+ .../attention/test_b12x_v41_ced_metadata.py   | 36 +++++++++++++++++++
+ tests/v1/core/test_prefix_caching.py          | 29 +++++++++++++--
+ vllm/models/deepseek_v4_1/attention.py        | 11 ++++--
+ vllm/models/deepseek_v4_1/ced.py              | 16 +++++++++
+ .../deepseek_v4_1/nvidia/model_state.py       | 16 +++------
+ 5 files changed, 93 insertions(+), 15 deletions(-)
+
+diff --git a/tests/v1/attention/test_b12x_v41_ced_metadata.py b/tests/v1/attention/test_b12x_v41_ced_metadata.py
+index f3b790751..baff99adb 100644
+--- a/tests/v1/attention/test_b12x_v41_ced_metadata.py
++++ b/tests/v1/attention/test_b12x_v41_ced_metadata.py
+@@ -13,6 +13,7 @@ from vllm.models.deepseek_v4_1.ced import (
+     KEEP_ALL,
+     CEDState,
+     ced_decoder_start,
++    ced_prompt_replay_window,
+     gather_rows,
+     plan_ced,
+     replay_rows,
+@@ -178,6 +179,41 @@ def test_decoder_warmup_extends_only_prompt_replay():
+         replay_rows([1], [0], [1], [0], [False], None, -1)
+ 
+ 
++def test_exact_replay_window_tracks_decoder_depth(monkeypatch):
++    hf = SimpleNamespace(
++        num_hidden_layers=61,
++        compress_ratios=(2,) * 41 + (1,) * 20,
++        kv_source_layer_ids=(41,),
++    )
++    monkeypatch.delenv("VLLM_DS41_CED_EXACT_WARMUP", raising=False)
++    assert ced_prompt_replay_window(hf) == CED_WINDOW
++    monkeypatch.setenv("VLLM_DS41_CED_EXACT_WARMUP", "1")
++    assert ced_prompt_replay_window(hf) == 2541
++
++
++def test_exact_replay_window_caps_prefix_cache_lookup(monkeypatch):
++    from vllm.models.deepseek_v4_1.attention import _Cache
++
++    hf = SimpleNamespace(
++        num_hidden_layers=61,
++        compress_ratios=(2,) * 41 + (1,) * 20,
++        kv_source_layer_ids=(41,),
++    )
++    cache = SimpleNamespace(
++        block_size=128,
++        kind="swa",
++        ratio=1,
++        window=128,
++        draft=False,
++        prefix="model.layers.41.swa",
++    )
++    config = SimpleNamespace(model_config=SimpleNamespace(hf_config=hf))
++    monkeypatch.setenv("VLLM_DS41_CED_EXACT_WARMUP", "1")
++    spec = _Cache.get_kv_cache_spec(cache, config)
++    assert not spec.prefix_cache_enabled
++    assert spec.prefill_replay_window == 2541
++
++
+ @pytest.mark.parametrize("generated", [1, 127, 128, 129, 255, 256, 257, 8193])
+ @pytest.mark.parametrize("chunk_size", [64, 128, 256, 512, 4096])
+ def test_recovery_keeps_all_rows_from_original_prompt_floor(generated, chunk_size):
+diff --git a/tests/v1/core/test_prefix_caching.py b/tests/v1/core/test_prefix_caching.py
+index c0b27c372..e47735209 100644
+--- a/tests/v1/core/test_prefix_caching.py
++++ b/tests/v1/core/test_prefix_caching.py
+@@ -6011,7 +6011,9 @@ def test_external_boundary_import_does_not_partially_allocate_when_pool_is_full(
+     assert manager.block_pool.get_num_free_blocks() == free
+ 
+ 
+-def make_ced_kv_cache_config(*, ced: bool = True) -> KVCacheConfig:
++def make_ced_kv_cache_config(
++    *, ced: bool = True, replay_window: int = 128
++) -> KVCacheConfig:
+     global_spec = MLAAttentionSpec(
+         block_size=128, num_kv_heads=1, head_size=1, dtype=torch.float32
+     )
+@@ -6023,7 +6025,11 @@ def make_ced_kv_cache_config(*, ced: bool = True) -> KVCacheConfig:
+         sliding_window=128,
+     )
+     decoder_spec = (
+-        replace(encoder_spec, prefix_cache_enabled=False, prefill_replay_window=128)
++        replace(
++            encoder_spec,
++            prefix_cache_enabled=False,
++            prefill_replay_window=replay_window,
++        )
+         if ced
+         else encoder_spec
+     )
+@@ -6128,6 +6134,25 @@ def test_ced_prefix_replays_short_prompt_boundary(prompt_length, expected_hit):
+     )
+ 
+ 
++@pytest.mark.parametrize(("prompt_length", "expected_hit"), [(1060, 0), (5000, 2432)])
++def test_ced_exact_warmup_caps_prefix_hit_before_dependency_frontier(
++    prompt_length, expected_hit
++):
++    manager = make_kv_cache_manager(
++        make_ced_kv_cache_config(replay_window=2541),
++        max_model_len=8192,
++        hash_block_size=32,
++    )
++    tokens = list(range(prompt_length))
++    producer = make_request("producer", tokens, 32, sha256)
++    assert manager.allocate_slots(producer, len(tokens)) is not None
++    manager.free(producer)
++    consumer = make_request("consumer", tokens, 32, sha256)
++    hits, hit_tokens, _ = manager.get_computed_blocks(consumer)
++    assert hit_tokens == expected_hit
++    assert not hits.blocks[2] and not hits.blocks[3]
++
++
+ @pytest.mark.parametrize("retention_interval", [0, 512])
+ @pytest.mark.parametrize("prompt_length", [4351, 4352, 4353, 4479, 4480, 4608])
+ @pytest.mark.parametrize("chunked", [False, True])
+diff --git a/vllm/models/deepseek_v4_1/attention.py b/vllm/models/deepseek_v4_1/attention.py
+index 614a66846..055a1267b 100644
+--- a/vllm/models/deepseek_v4_1/attention.py
++++ b/vllm/models/deepseek_v4_1/attention.py
+@@ -35,7 +35,10 @@ from vllm.model_executor.parameter import BlockQuantScaleParameter
+ from vllm.model_executor.utils import set_weight_attrs
+ from vllm.model_executor.weight_transfer import copy_weight
+ from vllm.models.deepseek_v4_1 import accuracy_trace, kernels, l2_prefetch, sp_prefill
+-from vllm.models.deepseek_v4_1.ced import ced_decoder_start
++from vllm.models.deepseek_v4_1.ced import (
++    ced_decoder_start,
++    ced_prompt_replay_window,
++)
+ from vllm.models.deepseek_v4_1.compressor import DeepseekCompressor
+ from vllm.models.deepseek_v4_1.quant_config import Block32FP8LinearMethod
+ from vllm.models.deepseek_v4_1.sparse_mla import (
+@@ -130,7 +133,11 @@ class _Cache(nn.Module, AttentionLayerBase):
+                 sliding_window=self.window,
+                 extra_retained_tokens=int(self.draft),
+                 prefix_cache_enabled=not bounded_replay,
+-                prefill_replay_window=128 if bounded_replay else 0,
++                prefill_replay_window=(
++                    ced_prompt_replay_window(config.model_config.hf_config)
++                    if bounded_replay
++                    else 0
++                ),
+             )
+         return MLAAttentionSpec(**common)
+ 
+diff --git a/vllm/models/deepseek_v4_1/ced.py b/vllm/models/deepseek_v4_1/ced.py
+index d662d1265..4edfd2f6a 100644
+--- a/vllm/models/deepseek_v4_1/ced.py
++++ b/vllm/models/deepseek_v4_1/ced.py
+@@ -39,6 +39,22 @@ def ced_decoder_start(hf_config: Any) -> int | None:
+     return None
+ 
+ 
++def ced_prompt_replay_window(hf_config: Any) -> int:
++    """Return the uncached prompt suffix needed by the private CED decoder.
++
++    Normal bounded replay rebuilds one ``CED_WINDOW``.  Exact warm-up must also
++    carry that window's causal dependency frontier through every earlier
++    decoder layer.  Prefix-cache lookup uses the same value so it cannot skip
++    rows that model-state replay needs to reconstruct request-private decoder
++    pages.
++    """
++    boundary = ced_decoder_start(hf_config)
++    if boundary is None or os.environ.get("VLLM_DS41_CED_EXACT_WARMUP") != "1":
++        return CED_WINDOW
++    decoder_layers = max(int(hf_config.num_hidden_layers) - boundary, 0)
++    return CED_WINDOW + max(decoder_layers - 1, 0) * (CED_WINDOW - 1)
++
++
+ def gather_rows(source: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+     """Gather first-axis rows, zeroing invalid indices (including graph padding)."""
+     output = source.new_empty((indices.numel(), *source.shape[1:]))
+diff --git a/vllm/models/deepseek_v4_1/nvidia/model_state.py b/vllm/models/deepseek_v4_1/nvidia/model_state.py
+index d6833801d..5e28af324 100644
+--- a/vllm/models/deepseek_v4_1/nvidia/model_state.py
++++ b/vllm/models/deepseek_v4_1/nvidia/model_state.py
+@@ -15,6 +15,7 @@ from vllm.models.deepseek_v4_1.ced import (
+     CED_WINDOW,
+     CEDState,
+     ced_decoder_start,
++    ced_prompt_replay_window,
+     replay_rows,
+ )
+ from vllm.models.deepseek_v4_1.sparse_mla import DeepseekV41B12xMetadata
+@@ -62,7 +63,8 @@ class DeepseekV41ModelState(DefaultModelState):
+         self._ced_batch: InputBatch | None = None
+         self.max_cudagraph_query_len: int | None = None
+         if ced_decoder_start(self.model_config.hf_config) is not None:
+-            compact_max = min(self.max_num_tokens, self.max_num_reqs * CED_WINDOW)
++            replay_window = ced_prompt_replay_window(self.model_config.hf_config)
++            compact_max = min(self.max_num_tokens, self.max_num_reqs * replay_window)
+             # Compaction changes the model's optional-input branch; FULL graphs
+             # remain valid for every short/varlen decode split, never long chunks
+             # or a short chunk that compacts (compacts_short_queries).
+@@ -259,17 +261,9 @@ class DeepseekV41ModelState(DefaultModelState):
+         keep_full = [req_id in self._ced_prompt_logprobs for req_id in req_ids]
+         decoder_warmup = 0
+         if os.environ.get("VLLM_DS41_CED_EXACT_WARMUP") == "1":
+-            hf = self.model_config.hf_config
+-            boundary = ced_decoder_start(hf)
+-            decoder_layers = (
+-                max(int(hf.num_hidden_layers) - boundary, 0)
+-                if boundary is not None
+-                else 0
++            decoder_warmup = (
++                ced_prompt_replay_window(self.model_config.hf_config) - CED_WINDOW
+             )
+-            # The causal SWA receptive field grows by W-1 per layer.  Keeping
+-            # W output rows already supplies the final layer's first window, so
+-            # the remaining decoder layers each require one earlier window.
+-            decoder_warmup = max(decoder_layers - 1, 0) * (CED_WINDOW - 1)
+         floors, limits = replay_rows(
+             batch.num_scheduled_tokens[:nr],
+             batch.num_computed_prefill_tokens_np[:nr],
+-- 
+2.43.0
+

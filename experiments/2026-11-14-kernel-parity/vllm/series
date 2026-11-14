@@ -8,3 +8,4 @@
 0008-feat-dsv41-add-exact-mode-CED-bypass.patch
 0009-feat-dsv41-warm-CED-replay-for-exact-retained-states.patch
 0010-fix-dsv41-propagate-CED-warmup-through-decoder-depth.patch
+0011-fix-dsv41-preserve-exact-CED-warmup-across-prefix-hi.patch

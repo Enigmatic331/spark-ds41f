@@ -23,6 +23,17 @@ extends prompt replay to 2,541 rows: the final 128 rows plus 19 earlier
 127-row SWA frontiers. Decode returns to the ordinary 128-row path. Default
 behavior is unchanged.
 
+Patch `0011-fix-dsv41-preserve-exact-CED-warmup-across-prefix-hi.patch`
+closes the prefix-cache path: cached global/encoder pages may be reused only
+up to the point that leaves the full 2,541-row private decoder suffix to
+rebuild. Decoder/drafter pages remain private. This is required for exact mode;
+otherwise a cache hit still caps replay at 128 rows and bypasses the fix.
+
+The trace-free four-commit extraction passed the original 6/6 request, a real
+26,112-token prefix hit with token-identical output, independent concurrency,
+tool, text, and mixed/long vision gates under the production DSpark-static and
+CUDA-graph profile. See `../2026-11-14-ced-exact-production/`.
+
 ## Validation
 
 The unchanged greedy request produced this causal ladder:

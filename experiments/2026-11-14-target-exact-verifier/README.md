@@ -23,9 +23,10 @@ target token, and a fully matched block commits the bonus target token.
   `6ae956399820e56dbcdfd2a4fbf15016b30d317e` (tree
   `ec7b7928da4de2c27b7bf57974c4de0ec8d71e16`) is AI-assisted site work. It adds the opt-in `target_exact`
   verifier, fail-closed configuration checks and focused GPU tests.
-- **Review:** Claude was asked for an independent design review. Its response,
-  if received, is advisory; local source inspection and matched execution tests
-  are the acceptance authority.
+- **Review:** Claude Code was asked for an independent design review, but its
+  configured USD budget was exceeded before it returned a response. No Claude
+  agreement is claimed; local source inspection and matched execution tests are
+  the acceptance authority.
 
 This patch is experimental and is not represented as original work for the
 imported layers, ready for an upstream pull request, or suitable for publication
@@ -41,4 +42,8 @@ without a separate ownership, license, attribution and exact-diff review.
    from the current Christopher profile and must remain worthwhile versus the
    recorded TensorFold control.
 4. Any material quality or speed failure restores TensorFold.
+
+The completed verdict and receipts are in `RESULTS.md`. The verifier preserved
+the tested serial sampled trajectories and speed, but the locked quality gate
+still trailed TensorFold, so TensorFold was restored.
 

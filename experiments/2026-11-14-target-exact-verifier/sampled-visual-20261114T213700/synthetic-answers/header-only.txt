@@ -1,0 +1,4 @@
+Based on the two images, here are the visible differences:
+
+*   **Search Input Field (Left):** In the first image, the search field is wide and displays the full placeholder text "Search by Address / Txn Hash". In the second image, this control has significantly decreased in width, truncating the text to "Search b" and displaying an orange vertical cursor line at the right edge.
+*   **Ethereum Mainnet Button (Right):** This control remains unchanged in both images, maintaining its size, position, and styling.

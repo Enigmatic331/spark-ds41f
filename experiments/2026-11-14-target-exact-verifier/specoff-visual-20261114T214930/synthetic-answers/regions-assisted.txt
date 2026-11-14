@@ -1,0 +1,3 @@
+```json
+{"verdict":"FAIL","summary":"Material regressions found in search bar geometry, semantic color of price change, and table column visibility.","regressions":[{"region":"Top navigation","type":"Geometry/Visibility","change":"Search bar width is drastically reduced, truncating the placeholder text.","severity":"high"},{"region":"Market figure","type":"Semantic colour styling","change":"The positive percentage change is colored red instead of green.","severity":"medium"},{"region":"Latest Transactions table","type":"Geometry/Visibility","change":"The rightmost 'Value' column is missing and the 'To' column is cut off.","severity":"high"}]}
+```

@@ -1,0 +1,3 @@
+```json
+{"verdict":"FAIL","summary":"The candidate image exhibits a broken table layout with missing columns and a clipped ETH price section with incorrect semantic coloring.","regressions":[{"region":"Latest Transactions Table","type":"Layout","change":"Table is horizontally shifted, misaligning the 'Txn Hash' header and cutting off the 'Value' column.","severity":"high"},{"region":"ETH Price Header","type":"Visibility & Color","change":"The ETH price text is clipped at the bottom, and the percentage change color changed from green to red.","severity":"medium"}]}
+```

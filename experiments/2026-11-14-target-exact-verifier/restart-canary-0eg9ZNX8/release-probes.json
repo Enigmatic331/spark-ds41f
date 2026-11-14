@@ -1,0 +1,445 @@
+{
+  "cases": {
+    "contract-60001": {
+      "call": {
+        "cached_tokens": 0,
+        "case_id": "tool-60001",
+        "client_decode_tps": 190.23965645353235,
+        "client_request_id": "qual-827cd33c653b4abf80879a963c75ac23",
+        "completion_tokens": 80,
+        "content_chars": 0,
+        "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "decode_span_s": 0.4205222059972584,
+        "done_count": 1,
+        "e2e_s": 1.1844448298215866,
+        "error": null,
+        "event_count": 11,
+        "finish_reason": "tool_calls",
+        "http_status": 200,
+        "keepalive_count": 0,
+        "max_event_gap_s": 0.0753141320310533,
+        "model_exact": true,
+        "models": [
+          "DeepSeek-V4.1-Flash-1017-v4"
+        ],
+        "prompt_tokens": 360,
+        "reasoning_chars": 0,
+        "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoning_tokens": 0,
+        "request_fingerprint": "b5b7c616375178ad9c7a6c2e05f16741119f7861c22103819fa29a8c75c077d5",
+        "response_request_id_count": 1,
+        "server_timing": {
+          "vllm.generation_time_ms": 491.5073410375044,
+          "vllm.queue_time_ms": 0.02769601996988058,
+          "vllm.time_to_first_token_ms": 559.3054359778762
+        },
+        "stop_reason_safe": null,
+        "tool_calls": [
+          {
+            "arguments_chars": 81,
+            "arguments_sha256": "cb5ca465d913f9f87bc974489add3140770fbb928efe26730b1b7113a8551457",
+            "id_present": true,
+            "index": 0,
+            "name": "lookup_receipt"
+          }
+        ],
+        "ttft_s": 0.7639226238243282,
+        "wire_ok": true
+      },
+      "follow": {
+        "cached_tokens": 0,
+        "case_id": "tool-follow-60001",
+        "client_decode_tps": 176.17028973369517,
+        "client_request_id": "qual-8182aebe3a5a4d548d1bdceb85e37f3e",
+        "completion_tokens": 43,
+        "content_chars": 106,
+        "content_sha256": "c65fb6629def5db18178ec8edbd465b9fe9e66d115ec8cb34eada28cc3ce9cba",
+        "decode_span_s": 0.24408201896585524,
+        "done_count": 1,
+        "e2e_s": 0.6972293450962752,
+        "error": null,
+        "event_count": 8,
+        "finish_reason": "stop",
+        "http_status": 200,
+        "keepalive_count": 0,
+        "max_event_gap_s": 0.03837325400672853,
+        "model_exact": true,
+        "models": [
+          "DeepSeek-V4.1-Flash-1017-v4"
+        ],
+        "prompt_tokens": 534,
+        "reasoning_chars": 0,
+        "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reasoning_tokens": 0,
+        "request_fingerprint": "c6ab3d84bf8d1d2a0d2f70372544f131084a160a759f9b161a95c4b56f4e98d1",
+        "response_request_id_count": 1,
+        "server_timing": {
+          "vllm.generation_time_ms": 245.32071698922664,
+          "vllm.queue_time_ms": 0.005744979716837406,
+          "vllm.time_to_first_token_ms": 423.8212490454316
+        },
+        "stop_reason_safe": null,
+        "tool_calls": [],
+        "ttft_s": 0.45314732613041997,
+        "wire_ok": true
+      },
+      "passed": true
+    },
+    "long_text_plus_images": {
+      "cached_tokens": 0,
+      "case_id": "vision-60051",
+      "checks": {
+        "image_count": true,
+        "long_prompt": true,
+        "pair_count": true,
+        "positive_is_red": true,
+        "search_clipped": true,
+        "value_clipped": true
+      },
+      "client_decode_tps": 188.44327930584433,
+      "client_request_id": "qual-31ee0ae3a472479e831c91bf2f7437ea",
+      "completion_tokens": 31,
+      "content_chars": 98,
+      "content_sha256": "c772dc067fe747b32d778fe611201beb9d6bab389807de149186cbd8e2e3c1fc",
+      "decode_span_s": 0.16450573410838842,
+      "done_count": 1,
+      "e2e_s": 7.094329125015065,
+      "error": null,
+      "event_count": 6,
+      "finish_reason": "stop",
+      "http_status": 200,
+      "keepalive_count": 0,
+      "max_event_gap_s": 0.04448290588334203,
+      "model_exact": true,
+      "models": [
+        "DeepSeek-V4.1-Flash-1017-v4"
+      ],
+      "passed": true,
+      "prompt_tokens": 32842,
+      "reasoning_chars": 0,
+      "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoning_tokens": 0,
+      "request_fingerprint": "a239f7eef0b57a54a481d27164a1b92b1c4e687796cef35fb48648a9d5dbdd96",
+      "response_request_id_count": 1,
+      "server_timing": {
+        "vllm.generation_time_ms": 190.4707249486819,
+        "vllm.queue_time_ms": 0.028927926905453205,
+        "vllm.time_to_first_token_ms": 6542.7695830585435
+      },
+      "stop_reason_safe": null,
+      "tool_calls": [],
+      "ttft_s": 6.929823390906677,
+      "wire_ok": true
+    },
+    "remote_media_refusal": {
+      "error": {
+        "body_bytes": 176,
+        "body_sha256": "674f17c967e9d44e5ac41489d7a3de2d799406e48d18d148ce33b92aee94ac83",
+        "code": 400,
+        "http_status": 400,
+        "type": "BadRequestError"
+      },
+      "passed": true,
+      "status": 400
+    },
+    "render_defaults": {
+      "checks": {
+        "default_matches_low": true,
+        "high_differs": true,
+        "max_distinct": true,
+        "medium_matches_high": true,
+        "minimal_matches_low": true,
+        "off_differs": true,
+        "off_matches_template": true,
+        "smaller_limit": true,
+        "ultra_matches_max": true,
+        "xhigh_matches_high": true
+      },
+      "finish": {
+        "high": "length",
+        "low": "length",
+        "max": "length",
+        "medium": "length",
+        "minimal": "length",
+        "off": "length",
+        "omitted": "length",
+        "template-off": "length",
+        "ultra": "length",
+        "xhigh": "length"
+      },
+      "passed": true,
+      "render_hashes": {
+        "high": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf",
+        "low": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+        "max": "cbb9ed79910602eec25dec4aa85785a651c2dbb139aac6c57730d540eb92034f",
+        "medium": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf",
+        "minimal": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+        "off": "ff7329906c241497946f9dfa91b3e9f07b70ed7abc89fd88ee8c510162a6020e",
+        "omitted": "a3492aa809dc2bf6f72b8c0b03f207748f071eb2f5b6edfdc10c4d4beba2875b",
+        "template-off": "ff7329906c241497946f9dfa91b3e9f07b70ed7abc89fd88ee8c510162a6020e",
+        "ultra": "cbb9ed79910602eec25dec4aa85785a651c2dbb139aac6c57730d540eb92034f",
+        "xhigh": "ffc4a2caa1d3c4a31dd97fe2b5232139fbfeaf6b72cf2379e1467520a19a0bdf"
+      }
+    },
+    "simultaneous_images_text_tools": {
+      "passed": true,
+      "rows": [
+        {
+          "cached_tokens": 0,
+          "case_id": "vision-60041",
+          "checks": {
+            "image_count": true,
+            "pair_count": true,
+            "positive_is_red": true,
+            "search_clipped": true,
+            "value_clipped": true
+          },
+          "client_decode_tps": 23.904050348112712,
+          "client_request_id": "qual-5e950cb0416d45c4a089c2f78c2dcdd1",
+          "completion_tokens": 48,
+          "content_chars": 131,
+          "content_sha256": "866f2de0ec746d76e7f24352e95e52ae59cd79ef252685cebcae81b0b55a37e1",
+          "decode_span_s": 2.008027899079025,
+          "done_count": 1,
+          "e2e_s": 7.820808802964166,
+          "error": null,
+          "event_count": 8,
+          "finish_reason": "stop",
+          "http_status": 200,
+          "keepalive_count": 0,
+          "max_event_gap_s": 1.5832187260966748,
+          "model_exact": true,
+          "models": [
+            "DeepSeek-V4.1-Flash-1017-v4"
+          ],
+          "passed": true,
+          "prompt_tokens": 4837,
+          "reasoning_chars": 0,
+          "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "reasoning_tokens": 0,
+          "request_fingerprint": "27d5f2dbf989e0b52362ad2944478cbfd1489337387cc3abad97eae2ea46f811",
+          "response_request_id_count": 1,
+          "server_timing": {
+            "vllm.generation_time_ms": 2014.105875045061,
+            "vllm.queue_time_ms": 39.059801027178764,
+            "vllm.time_to_first_token_ms": 5107.042936957441
+          },
+          "stop_reason_safe": null,
+          "tool_calls": [],
+          "ttft_s": 5.812780903885141,
+          "wire_ok": true
+        },
+        {
+          "cached_tokens": 0,
+          "case_id": "vision-60042",
+          "checks": {
+            "image_count": true,
+            "pair_count": true,
+            "positive_is_red": true,
+            "search_clipped": true,
+            "value_clipped": true
+          },
+          "client_decode_tps": 63.08596163912366,
+          "client_request_id": "qual-3f6b0acf656943a996df75beb92720e4",
+          "completion_tokens": 48,
+          "content_chars": 131,
+          "content_sha256": "866f2de0ec746d76e7f24352e95e52ae59cd79ef252685cebcae81b0b55a37e1",
+          "decode_span_s": 0.760866581927985,
+          "done_count": 1,
+          "e2e_s": 8.222645991947502,
+          "error": null,
+          "event_count": 8,
+          "finish_reason": "stop",
+          "http_status": 200,
+          "keepalive_count": 0,
+          "max_event_gap_s": 0.35388664389029145,
+          "model_exact": true,
+          "models": [
+            "DeepSeek-V4.1-Flash-1017-v4"
+          ],
+          "passed": true,
+          "prompt_tokens": 4837,
+          "reasoning_chars": 0,
+          "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "reasoning_tokens": 0,
+          "request_fingerprint": "671d1aaa8397b2c576c3106cb0adc779ab883881dd115846c4e09cf54a1b08d8",
+          "response_request_id_count": 1,
+          "server_timing": {
+            "vllm.generation_time_ms": 756.1633390141651,
+            "vllm.queue_time_ms": 0.016528996638953686,
+            "vllm.time_to_first_token_ms": 3649.1068189498037
+          },
+          "stop_reason_safe": null,
+          "tool_calls": [],
+          "ttft_s": 7.461779410019517,
+          "wire_ok": true
+        },
+        {
+          "cached_tokens": 0,
+          "case_id": "sql-60043",
+          "client_decode_tps": 119.46623265741981,
+          "client_request_id": "qual-ed74c3ba56824aca929a9f444baf20b3",
+          "completion_tokens": 32,
+          "content_chars": 128,
+          "content_sha256": "e26fdcd8fe77e7af926120b05f31b9da25e0b725c58d3053e7f65ad82f5e9c9a",
+          "decode_span_s": 0.26785811595618725,
+          "done_count": 1,
+          "e2e_s": 0.7134993050713092,
+          "error": null,
+          "event_count": 6,
+          "finish_reason": "stop",
+          "http_status": 200,
+          "keepalive_count": 0,
+          "max_event_gap_s": 0.06465057493187487,
+          "model_exact": true,
+          "models": [
+            "DeepSeek-V4.1-Flash-1017-v4"
+          ],
+          "passed": true,
+          "prompt_tokens": 53,
+          "reasoning_chars": 0,
+          "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "reasoning_tokens": 0,
+          "request_fingerprint": "9922c6a6f2d04bd3c7ce7cd6ae2667cfafa7609f7e5021586a15b49f6776a965",
+          "response_request_id_count": 1,
+          "server_timing": {
+            "vllm.generation_time_ms": 266.27737504895777,
+            "vllm.queue_time_ms": 0.3035740228369832,
+            "vllm.time_to_first_token_ms": 423.33632695954293
+          },
+          "stop_reason_safe": null,
+          "tool_calls": [],
+          "ttft_s": 0.44564118911512196,
+          "wire_ok": true
+        },
+        {
+          "call": {
+            "cached_tokens": 0,
+            "case_id": "tool-60044",
+            "client_decode_tps": 10.389738976988635,
+            "client_request_id": "qual-e6d5d458b5ef41df94821652702e4af6",
+            "completion_tokens": 75,
+            "content_chars": 0,
+            "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "decode_span_s": 7.2186606579925865,
+            "done_count": 1,
+            "e2e_s": 7.819347814191133,
+            "error": null,
+            "event_count": 10,
+            "finish_reason": "tool_calls",
+            "http_status": 200,
+            "keepalive_count": 0,
+            "max_event_gap_s": 3.358386255800724,
+            "model_exact": true,
+            "models": [
+              "DeepSeek-V4.1-Flash-1017-v4"
+            ],
+            "prompt_tokens": 355,
+            "reasoning_chars": 0,
+            "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "reasoning_tokens": 0,
+            "request_fingerprint": "f37c3cc0e3cee80e19d1e5fb04d992e415e75fdd1b4cbcf1a876cba8553fa72c",
+            "response_request_id_count": 1,
+            "server_timing": {
+              "vllm.generation_time_ms": 7322.069728048518,
+              "vllm.queue_time_ms": 0.0060800230130553246,
+              "vllm.time_to_first_token_ms": 387.85008690319955
+            },
+            "stop_reason_safe": null,
+            "tool_calls": [
+              {
+                "arguments_chars": 81,
+                "arguments_sha256": "0c6f93e8fd3cf454be54a0a546a10459f08d29cb19ab8aab4e5e3a9a617f523b",
+                "id_present": true,
+                "index": 0,
+                "name": "lookup_receipt"
+              }
+            ],
+            "ttft_s": 0.6006871561985463,
+            "wire_ok": true
+          },
+          "follow": {
+            "cached_tokens": 0,
+            "case_id": "tool-follow-60044",
+            "client_decode_tps": 160.20497825244445,
+            "client_request_id": "qual-f04763da2c0b44a9854464a74ffb3960",
+            "completion_tokens": 46,
+            "content_chars": 106,
+            "content_sha256": "ffbdf926db2799d1add525bb21ab1ee2800291560c51335e19280207754f2af8",
+            "decode_span_s": 0.2871321509592235,
+            "done_count": 1,
+            "e2e_s": 0.7546498209703714,
+            "error": null,
+            "event_count": 9,
+            "finish_reason": "stop",
+            "http_status": 200,
+            "keepalive_count": 0,
+            "max_event_gap_s": 0.046457594027742743,
+            "model_exact": true,
+            "models": [
+              "DeepSeek-V4.1-Flash-1017-v4"
+            ],
+            "prompt_tokens": 527,
+            "reasoning_chars": 0,
+            "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "reasoning_tokens": 0,
+            "request_fingerprint": "b8ad11bf922655af820fe764d4390ba0a4796115d897316a80395a74d48ec265",
+            "response_request_id_count": 1,
+            "server_timing": {
+              "vllm.generation_time_ms": 296.88645200803876,
+              "vllm.queue_time_ms": 0.00879995059221983,
+              "vllm.time_to_first_token_ms": 416.14396206568927
+            },
+            "stop_reason_safe": null,
+            "tool_calls": [],
+            "ttft_s": 0.46751767001114786,
+            "wire_ok": true
+          },
+          "passed": true
+        }
+      ]
+    },
+    "sql-60001": {
+      "cached_tokens": 0,
+      "case_id": "sql-60001",
+      "client_decode_tps": 159.16707627582593,
+      "client_request_id": "qual-b90a3d9ff2b24f908820ae342b398afb",
+      "completion_tokens": 32,
+      "content_chars": 128,
+      "content_sha256": "e26fdcd8fe77e7af926120b05f31b9da25e0b725c58d3053e7f65ad82f5e9c9a",
+      "decode_span_s": 0.20104660303331912,
+      "done_count": 1,
+      "e2e_s": 0.4834461079444736,
+      "error": null,
+      "event_count": 6,
+      "finish_reason": "stop",
+      "http_status": 200,
+      "keepalive_count": 0,
+      "max_event_gap_s": 0.043448525946587324,
+      "model_exact": true,
+      "models": [
+        "DeepSeek-V4.1-Flash-1017-v4"
+      ],
+      "passed": true,
+      "prompt_tokens": 53,
+      "reasoning_chars": 0,
+      "reasoning_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reasoning_tokens": 0,
+      "request_fingerprint": "9922c6a6f2d04bd3c7ce7cd6ae2667cfafa7609f7e5021586a15b49f6776a965",
+      "response_request_id_count": 1,
+      "server_timing": {
+        "vllm.generation_time_ms": 202.36576406750828,
+        "vllm.queue_time_ms": 0.023279921151697636,
+        "vllm.time_to_first_token_ms": 207.92475901544094
+      },
+      "stop_reason_safe": null,
+      "tool_calls": [],
+      "ttft_s": 0.2823995049111545,
+      "wire_ok": true
+    }
+  },
+  "finished_utc": "2026-11-14T13:35:58+00:00",
+  "schema": 1,
+  "started_utc": "2026-11-14T13:35:38+00:00",
+  "status": "PASS"
+}
